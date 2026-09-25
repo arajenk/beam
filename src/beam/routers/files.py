@@ -8,13 +8,13 @@ async def upload(file: UploadFile):
     return {"destination" : destination}
 
 async def save_file(file):
-    CHUNK_SIZE = 1024 * 1024 
+    size = 1024 * 1024 
     file_id = secrets.token_hex(6)
     
     destination = f"src/beam/uploads/{file_id}_{file.filename}"
     with open(destination, "wb") as f:
         while True:
-            chunk = await file.read(CHUNK_SIZE)
+            chunk = await file.read(size)
             if not chunk:
                 break
             
