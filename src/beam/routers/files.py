@@ -1,4 +1,5 @@
-from fastapi import APIRouter, UploadFile
+from fastapi import APIRouter, UploadFile, HTTPException
+from starlette.responses import FileResponse
 import secrets
 from sqlalchemy.orm import Session
 from beam import database
@@ -31,6 +32,21 @@ async def save_file(file):
             
             f.write(chunk)
     return destination, file_id
+
+@router.get('/f/{file_id}')
+def download(file_id: str):
+    with Session(database.engine) as session:
+        db_file = session.get(database.File, file_id)  
+    
+        if db_file:
+            stored_path = f"src/beam/uploads/{file_id}_{db_file.file_name}"
+            return FileResponse(
+                path=stored_path, 
+                filename=db_file.file_name
+            )
+        raise HTTPException(status_code=404, detail="File not found")
+        
+
 
     
 
