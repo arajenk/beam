@@ -1,5 +1,5 @@
 from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session
 
 engine = create_engine("sqlite:///beam.db", echo=True) 
 
@@ -14,3 +14,5 @@ class File(Base):
     
 
 Base.metadata.create_all(engine)
+
+
