@@ -24,7 +24,10 @@ async def upload(file: UploadFile):
         session.commit()
     cleanup()
 
-    return {"destination" : destination}
+    return {
+        "file_id": file_id,
+        "expires_at": expires_at
+    }
 
 async def save_file(file):
     chunk_size = 1024 * 1024 
@@ -63,11 +66,9 @@ def cleanup():
     with Session(database.engine) as session:
         expired_files = session.scalars(query).all()
         for db_file in expired_files:
-            #delete it from the physical location
             file_path = Path(f"src/beam/uploads/{db_file.file_id}_{db_file.file_name}")
             file_path.unlink(missing_ok=True)
             
-            #delete the record in the database
             session.delete(db_file)
         session.commit()
 
