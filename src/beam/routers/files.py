@@ -34,6 +34,7 @@ async def upload(file: UploadFile):
 
     return {
         "file_id": file_id,
+        "filename": file.filename,
         "expires_at": expires_at
     }
 
@@ -41,7 +42,7 @@ async def save_file(file):
     CHUNK_SIZE = 1024 * 1024
     file_id = secrets.token_hex(6)
     MAX_SIZE = 10 * 1024 * 1024 * 1024
-    destination = f"src/beam/uploads/{file_id}_{file.filename}"
+    destination = f"src/beam/uploads/{file_id}"
     if file.size is not None and file.size > MAX_SIZE:
         raise UploadTooLarge
     with open(destination, "wb") as f:
@@ -66,7 +67,7 @@ def download(file_id: str):
     
         if db_file:
             if db_file.expires_at > datetime.now():
-                stored_path = f"src/beam/uploads/{file_id}_{db_file.file_name}"
+                stored_path = f"src/beam/uploads/{file_id}"
                 return FileResponse(
                     path=stored_path, 
                     filename=db_file.file_name
@@ -83,7 +84,7 @@ def cleanup():
     with Session(database.engine) as session:
         expired_files = session.scalars(query).all()
         for db_file in expired_files:
-            file_path = Path(f"src/beam/uploads/{db_file.file_id}_{db_file.file_name}")
+            file_path = Path(f"src/beam/uploads/{db_file.file_id}")
             file_path.unlink(missing_ok=True)
             
             session.delete(db_file)
@@ -96,8 +97,7 @@ def cleanup():
     with Session(database.engine) as session:
         id_set = set(session.scalars(id_query))
     for file in path.iterdir():
-        file_id = file.name.split("_", 1)[0]
-        if file_id not in id_set:
+        if file.name not in id_set:
             file.unlink(missing_ok=True)
 
 
