@@ -11,3 +11,4 @@ wheels/
 
 src/beam/uploads/
 beam.db
+.env

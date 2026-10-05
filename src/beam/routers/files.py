@@ -6,11 +6,27 @@ from beam import database
 from datetime import datetime, timedelta
 from sqlalchemy import select
 from pathlib import Path
+import boto3
+from dotenv import load_dotenv
+import os
 
+load_dotenv()
 class UploadTooLarge(Exception):
     pass
 
 router = APIRouter()
+
+account_id = os.environ["R2_ACCOUNT_ID"]
+access_key = os.environ["R2_ACCESS_KEY_ID"]
+secret_key = os.environ["R2_SECRET_ACCESS_KEY"]
+
+s3 = boto3.client(
+    "s3",
+    endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
+    aws_access_key_id=access_key,
+    aws_secret_access_key=secret_key,
+    region_name="auto",
+)
 
 @router.post('/upload')
 async def upload(file: UploadFile):
