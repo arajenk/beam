@@ -9,6 +9,6 @@ wheels/
 # Virtual environments
 .venv
 
-src/beam/uploads/
-beam.db
 .env
+.impeccable
+.vibe-wise

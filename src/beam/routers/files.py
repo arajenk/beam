@@ -1,11 +1,8 @@
 from fastapi import APIRouter, UploadFile, HTTPException
-from starlette.responses import FileResponse
+from starlette.responses import RedirectResponse
+from botocore.exceptions import ClientError
+from urllib.parse import quote, unquote
 import secrets
-from sqlalchemy.orm import Session
-from beam import database
-from datetime import datetime, timedelta
-from sqlalchemy import select
-from pathlib import Path
 import boto3
 from dotenv import load_dotenv
 import os
@@ -19,6 +16,7 @@ router = APIRouter()
 account_id = os.environ["R2_ACCOUNT_ID"]
 access_key = os.environ["R2_ACCESS_KEY_ID"]
 secret_key = os.environ["R2_SECRET_ACCESS_KEY"]
+r2_bucket = "beam"
 
 s3 = boto3.client(
     "s3",
@@ -35,89 +33,61 @@ async def upload(file: UploadFile):
     except UploadTooLarge:
         raise HTTPException(status_code=413, detail="File is too large")
 
-    now = datetime.now()
-    expires_at = now + timedelta(hours=12)
-    
-    file_record = database.File(
-        file_id = file_id,
-        file_name = file.filename,
-        expires_at = expires_at
-    )
-    with Session(database.engine) as session:
-        session.add(file_record)
-        session.commit()
-    cleanup()
-
     return {
         "file_id": file_id,
         "filename": file.filename,
-        "expires_at": expires_at
     }
 
 async def save_file(file):
-    CHUNK_SIZE = 1024 * 1024
-    file_id = secrets.token_hex(6)
     MAX_SIZE = 10 * 1024 * 1024 * 1024
-    destination = f"src/beam/uploads/{file_id}"
+
     if file.size is not None and file.size > MAX_SIZE:
         raise UploadTooLarge
-    with open(destination, "wb") as f:
-        total_size = 0
-        while True:
-            chunk = await file.read(CHUNK_SIZE)
-            if not chunk:
-                break
-            total_size += len(chunk)
 
-            if total_size > MAX_SIZE:
-                Path(destination).unlink(missing_ok=True)
-                raise UploadTooLarge
-            f.write(chunk)
+    file_id = secrets.token_hex(6)
 
-        return file_id
+    # metadata is sent as HTTP headers, so encode non-ASCII filenames
+    s3.upload_fileobj(
+        file.file,
+        r2_bucket,
+        file_id,
+        ExtraArgs={"Metadata": {"filename": quote(file.filename or "", safe="")}},
+    )
+
+    return file_id
+
+def lookup_file(file_id):
+    try:
+        head = s3.head_object(Bucket=r2_bucket, Key=file_id)
+    except ClientError as e:
+        if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
+            raise HTTPException(status_code=404, detail="File not found")
+        raise
+
+    # objects uploaded before filename metadata existed fall back to the id
+    filename = unquote(head["Metadata"].get("filename", "")) or file_id
+    return filename, head["ContentLength"]
+
+@router.get('/f/{file_id}/info')
+def info(file_id: str):
+    filename, size = lookup_file(file_id)
+    return {
+        "file_id": file_id,
+        "filename": filename,
+        "size": size,
+    }
 
 @router.get('/f/{file_id}')
 def download(file_id: str):
-    with Session(database.engine) as session:
-        db_file = session.get(database.File, file_id)  
-    
-        if db_file:
-            if db_file.expires_at > datetime.now():
-                stored_path = f"src/beam/uploads/{file_id}"
-                return FileResponse(
-                    path=stored_path, 
-                    filename=db_file.file_name
-                )
-            else:
-                raise HTTPException(status_code=410, detail="File has expired")
-        raise HTTPException(status_code=404, detail="File not found")
-        
-def cleanup():
-    #kill expired files
-    query = select(database.File).where(
-        database.File.expires_at <= datetime.now()
+    filename, _ = lookup_file(file_id)
+
+    url = s3.generate_presigned_url(
+        "get_object",
+        Params={
+            "Bucket": r2_bucket,
+            "Key": file_id,
+            "ResponseContentDisposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
+        },
+        ExpiresIn=600,
     )
-    with Session(database.engine) as session:
-        expired_files = session.scalars(query).all()
-        for db_file in expired_files:
-            file_path = Path(f"src/beam/uploads/{db_file.file_id}")
-            file_path.unlink(missing_ok=True)
-            
-            session.delete(db_file)
-        session.commit()
-
-    #orphan killer
-    path = Path("src/beam/uploads")
-
-    id_query = select(database.File.file_id)
-    with Session(database.engine) as session:
-        id_set = set(session.scalars(id_query))
-    for file in path.iterdir():
-        if file.name not in id_set:
-            file.unlink(missing_ok=True)
-
-
-    
-
-
-    
+    return RedirectResponse(url)
