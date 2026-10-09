@@ -181,13 +181,19 @@ def test_complete_joins_the_parts(client, r2):
 def test_complete_refuses_when_r2_holds_more_than_10_gib(client, r2):
     # the browser claims 2 parts, but R2's own record is what counts
     expect_list_parts(r2, [(1, '"e1"', 6 * GiB), (2, '"e2"', 5 * GiB)])
+    # an oversized upload can never be fixed, so its parts are discarded right away
+    r2.add_response(
+        "abort_multipart_upload",
+        {},
+        {"Bucket": "beam", "Key": "abc123", "UploadId": "upload-123"},
+    )
 
     r = client.post(
         "/uploads/abc123/complete",
         json={"upload_id": "upload-123", "parts": [{"part_number": 1, "etag": '"e1"'}, {"part_number": 2, "etag": '"e2"'}]},
     )
 
-    assert r.status_code == 413  # and complete_multipart_upload was never called
+    assert r.status_code == 413  # aborted, and complete_multipart_upload was never called
 
 
 def test_complete_refuses_when_a_part_is_missing(client, r2):
@@ -219,6 +225,16 @@ def test_abort_discards_the_parts(client, r2):
         {},
         {"Bucket": "beam", "Key": "abc123", "UploadId": "upload-123"},
     )
+
+    r = client.post("/uploads/abc123/abort", params={"upload_id": "upload-123"})
+
+    assert r.status_code == 204
+    assert r.content == b""  # 204 means no body
+
+
+def test_abort_of_finished_upload_still_succeeds(client, r2):
+    # already completed or aborted: too late to cancel, nothing left to do
+    r2.add_client_error("abort_multipart_upload", service_error_code="NoSuchUpload", http_status_code=404)
 
     r = client.post("/uploads/abc123/abort", params={"upload_id": "upload-123"})
 

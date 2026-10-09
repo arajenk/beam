@@ -17,6 +17,7 @@ account_id = os.environ["R2_ACCOUNT_ID"]
 access_key = os.environ["R2_ACCESS_KEY_ID"]
 secret_key = os.environ["R2_SECRET_ACCESS_KEY"]
 r2_bucket = "beam"
+MAX_SIZE = 10 * 1024**3
 
 s3 = boto3.client(
     "s3",
@@ -41,7 +42,7 @@ class Complete(BaseModel):
 
 @router.post('/uploads')
 def upload(start: Start):
-    if start.size > 10 * 1024**3:
+    if start.size > MAX_SIZE:
         raise HTTPException(status_code=413, detail="File too large")
     
     file_id = secrets.token_hex(6)
@@ -81,6 +82,63 @@ def upload(start: Start):
         "part_urls": part_urls
     }
 
+@router.post('/uploads/{file_id}/abort', status_code=204)
+def abort(file_id: str, upload_id: str):
+
+    try:
+        s3.abort_multipart_upload(
+            Bucket=r2_bucket, 
+            Key=file_id,
+            UploadId=upload_id
+        )
+    except ClientError as e:
+        # already completed or aborted: too late to cancel, so treat it as done
+        if e.response["Error"]["Code"] not in ("404", "NoSuchUpload"):
+            raise
+
+@router.post('/uploads/{file_id}/complete')
+def complete(file_id: str, complete_req: Complete):
+    try:
+        list_of_parts = s3.list_parts(Bucket=r2_bucket, Key=file_id, UploadId=complete_req.upload_id)
+    except ClientError as e:
+        if e.response["Error"]["Code"] in ("404", "NoSuchUpload"):
+            raise HTTPException(status_code=404, detail="File not found")
+        raise
+    # R2 leaves "Parts" out entirely when nothing has been uploaded yet
+    r2_parts = list_of_parts.get("Parts", [])
+
+    total_size = 0
+    for part in r2_parts:
+        total_size += part["Size"]
+        if total_size > MAX_SIZE:
+            # nothing can fix an oversized upload, so delete the parts now instead of in 7 days
+            s3.abort_multipart_upload(Bucket=r2_bucket, Key=file_id, UploadId=complete_req.upload_id)
+            raise HTTPException(status_code=413, detail="File too large")
+
+    # the browser's list is a claim; R2's record is what actually got uploaded
+    r2_pairs = set()
+    for part in r2_parts:
+        r2_pairs.add((part["PartNumber"], part["ETag"]))
+
+    browser_pairs = set()
+    for part in complete_req.parts:
+        browser_pairs.add((part.part_number, part.etag))
+
+    if r2_pairs != browser_pairs:
+        raise HTTPException(status_code=400, detail="Parts don't match")
+
+    # R2 joins parts in the order given, so sort by part number
+    sorted_parts = sorted(complete_req.parts, key=lambda part: part.part_number)
+    s3.complete_multipart_upload(
+        Bucket=r2_bucket,
+        Key=file_id,
+        UploadId=complete_req.upload_id,
+        MultipartUpload={
+            "Parts": [{"PartNumber": part.part_number, "ETag": part.etag} for part in sorted_parts]
+        },
+    )
+
+    return {"file_id": file_id}
 
 
 def lookup_file(file_id):
