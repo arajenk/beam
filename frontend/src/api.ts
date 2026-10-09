@@ -1,9 +1,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // This module is the only place the UI touches the network.
 //
-// Uploads currently go through the API's POST /upload, so the server relays the
-// bytes to R2. Presigned uploads will replace the body of uploadFile() later;
-// the UI depends only on the types below.
+// Uploads are presigned multipart: the API starts the upload and signs one URL
+// per part, the browser PUTs the parts straight to R2, then the API checks
+// them and completes. File bytes never pass through the API.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type UploadProgress = { loaded: number; total: number };
@@ -35,10 +35,15 @@ export function shareUrl(fileId: string): string {
   return `${window.location.origin}/f/${fileId}`;
 }
 
+const PARALLEL_PARTS = 4;
+const PART_ATTEMPTS = 3;
+
+type StartResponse = { file_id: string; upload_id: string; part_size: number; part_urls: string[] };
+type CompletedPart = { part_number: number; etag: string };
+
 /**
  * Upload one file, reporting progress. Cancel aborts it.
- * XHR rather than fetch, because fetch can't report upload progress.
- * Progress covers browser → API only; the API still has to send it on to R2.
+ * Parts go up in parallel over XHR (fetch can't report upload progress).
  */
 export function uploadFile(
   file: File,
@@ -51,33 +56,156 @@ export function uploadFile(
     };
   }
 
-  const xhr = new XMLHttpRequest();
+  const active = new Set<XMLHttpRequest>();
+  let cancelled = false;
+  // Set on cancel or on the first failure, so the other parts stop too.
+  let stopped = false;
+  const isStopped = () => stopped;
+  let upload: { fileId: string; uploadId: string } | null = null;
 
-  const promise = new Promise<UploadResult>((resolve, reject) => {
-    xhr.upload.onprogress = (e) => {
-      onProgress({ loaded: e.loaded, total: e.lengthComputable ? e.total : file.size });
-    };
-    xhr.onload = () => {
-      if (xhr.status === 413) {
-        reject(new UploadError("too-large", "File is over 10 GB"));
-      } else if (xhr.status >= 200 && xhr.status < 300) {
-        const body = JSON.parse(xhr.responseText) as { file_id: string; filename: string | null };
-        resolve({ fileId: body.file_id, filename: body.filename ?? file.name, size: file.size });
-      } else {
-        reject(new UploadError("failed", `Upload failed (${xhr.status})`));
+  const abortUrl = () =>
+    upload &&
+    `${API_URL}/uploads/${encodeURIComponent(upload.fileId)}/abort?upload_id=${encodeURIComponent(upload.uploadId)}`;
+
+  // Tell the API to discard the parts. Best-effort: R2's 7-day abort rule is the backstop.
+  const abortOnServer = () => {
+    const url = abortUrl();
+    if (url) fetch(url, { method: "POST", keepalive: true }).catch(() => {});
+  };
+
+  // Closing the tab can't run normal requests, so hand the browser a beacon instead.
+  const onPageHide = () => {
+    const url = abortUrl();
+    if (url) navigator.sendBeacon(url);
+  };
+  const onBeforeUnload = (e: BeforeUnloadEvent) => e.preventDefault();
+  window.addEventListener("pagehide", onPageHide);
+  window.addEventListener("beforeunload", onBeforeUnload);
+  const stopListening = () => {
+    window.removeEventListener("pagehide", onPageHide);
+    window.removeEventListener("beforeunload", onBeforeUnload);
+  };
+
+  const run = async (): Promise<UploadResult> => {
+    const start = await postJson<StartResponse>("/uploads", {
+      filename: file.name,
+      size: file.size,
+      content_type: file.type || "application/octet-stream",
+    });
+    upload = { fileId: start.file_id, uploadId: start.upload_id };
+    if (cancelled) throw new UploadError("cancelled", "Upload cancelled");
+
+    // Bytes sent per part; summed for the progress bar. Reset when a part retries.
+    const sent = new Array<number>(start.part_urls.length).fill(0);
+    const report = () => onProgress({ loaded: sent.reduce((a, b) => a + b, 0), total: file.size });
+
+    const completed: CompletedPart[] = [];
+    let next = 0;
+    const worker = async () => {
+      while (next < start.part_urls.length && !stopped) {
+        const i = next++;
+        const blob = file.slice(i * start.part_size, (i + 1) * start.part_size);
+        const etag = await putPartWithRetry(start.part_urls[i], blob, active, isStopped, (loaded) => {
+          sent[i] = loaded;
+          report();
+        });
+        completed.push({ part_number: i + 1, etag });
       }
     };
-    // Network failures, and responses the browser hid because of CORS, both land here.
-    xhr.onerror = () => reject(new UploadError("failed", "Upload failed"));
-    xhr.onabort = () => reject(new UploadError("cancelled", "Upload cancelled"));
+    await Promise.all(Array.from({ length: PARALLEL_PARTS }, worker));
+    if (stopped) throw new UploadError("cancelled", "Upload cancelled");
 
-    const form = new FormData();
-    form.append("file", file);
-    xhr.open("POST", `${API_URL}/upload`);
-    xhr.send(form);
+    completed.sort((a, b) => a.part_number - b.part_number);
+    await postJson(`/uploads/${encodeURIComponent(start.file_id)}/complete`, {
+      upload_id: start.upload_id,
+      parts: completed,
+    });
+    return { fileId: start.file_id, filename: file.name, size: file.size };
+  };
+
+  const promise = run()
+    .catch((err: unknown) => {
+      stopped = true;
+      for (const xhr of active) xhr.abort();
+      // runs once for both cancel and failure, after the upload id is known
+      abortOnServer();
+      if (cancelled) throw new UploadError("cancelled", "Upload cancelled");
+      throw err instanceof UploadError ? err : new UploadError("failed", "Upload failed");
+    })
+    .finally(stopListening);
+
+  return {
+    promise,
+    cancel: () => {
+      if (cancelled) return;
+      cancelled = true;
+      stopped = true;
+      for (const xhr of active) xhr.abort();
+    },
+  };
+}
+
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
+  if (res.status === 413) throw new UploadError("too-large", "File is over 10 GB");
+  if (!res.ok) throw new UploadError("failed", `Request failed (${res.status})`);
+  return (await res.json()) as T;
+}
 
-  return { promise, cancel: () => xhr.abort() };
+async function putPartWithRetry(
+  url: string,
+  blob: Blob,
+  active: Set<XMLHttpRequest>,
+  isStopped: () => boolean,
+  onSent: (loaded: number) => void,
+): Promise<string> {
+  for (let attempt = 1; ; attempt++) {
+    if (isStopped()) throw new UploadError("cancelled", "Upload cancelled");
+    try {
+      return await putPart(url, blob, active, onSent);
+    } catch (err) {
+      onSent(0);
+      const aborted = err instanceof UploadError && err.kind === "cancelled";
+      if (aborted || attempt >= PART_ATTEMPTS) throw err;
+      await new Promise((r) => setTimeout(r, 1000 * attempt));
+    }
+  }
+}
+
+/** PUT one part to its presigned R2 URL and return the ETag R2 sends back. */
+function putPart(
+  url: string,
+  blob: Blob,
+  active: Set<XMLHttpRequest>,
+  onSent: (loaded: number) => void,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    active.add(xhr);
+    const done = () => active.delete(xhr);
+    xhr.upload.onprogress = (e) => onSent(e.loaded);
+    xhr.onload = () => {
+      done();
+      // null here usually means the bucket's CORS policy doesn't expose ETag
+      const etag = xhr.getResponseHeader("ETag");
+      if (xhr.status >= 200 && xhr.status < 300 && etag) resolve(etag);
+      else reject(new UploadError("failed", `Part upload failed (${xhr.status})`));
+    };
+    xhr.onerror = () => {
+      done();
+      reject(new UploadError("failed", "Part upload failed"));
+    };
+    xhr.onabort = () => {
+      done();
+      reject(new UploadError("cancelled", "Upload cancelled"));
+    };
+    xhr.open("PUT", url);
+    xhr.send(blob);
+  });
 }
 
 /** Name and size for the download page. null means missing or expired. */

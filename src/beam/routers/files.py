@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, HTTPException
+from fastapi import APIRouter, HTTPException
 from starlette.responses import RedirectResponse
 from botocore.exceptions import ClientError
 from urllib.parse import quote, unquote
@@ -6,10 +6,10 @@ import secrets
 import boto3
 from dotenv import load_dotenv
 import os
+from pydantic import BaseModel, Field
+import math
 
 load_dotenv()
-class UploadTooLarge(Exception):
-    pass
 
 router = APIRouter()
 
@@ -26,35 +26,62 @@ s3 = boto3.client(
     region_name="auto",
 )
 
-@router.post('/upload')
-async def upload(file: UploadFile):
-    try:
-        file_id = await save_file(file)
-    except UploadTooLarge:
-        raise HTTPException(status_code=413, detail="File is too large")
+class Part(BaseModel):
+    part_number: int
+    etag: str
+
+class Start(BaseModel):
+    filename: str
+    size: int = Field(gt=0)
+    content_type: str
+
+class Complete(BaseModel):
+    upload_id: str
+    parts: list[Part]
+
+@router.post('/uploads')
+def upload(start: Start):
+    if start.size > 10 * 1024**3:
+        raise HTTPException(status_code=413, detail="File too large")
+    
+    file_id = secrets.token_hex(6)
+
+    multipart = s3.create_multipart_upload(
+        Bucket=r2_bucket, 
+        Key=file_id, 
+        ContentType=start.content_type, 
+        Metadata={"filename": quote(start.filename, safe="")})
+    
+    upload_id = multipart["UploadId"]
+    part_size = 64 * 1024 * 1024
+    part_count = math.ceil(start.size / part_size)
+    remaining = start.size
+    part_urls = []
+
+    for part_number in range(1, part_count+1):
+        this_size = min(part_size, remaining)
+        url = s3.generate_presigned_url(
+                "upload_part",
+                Params={
+                    "Bucket": r2_bucket,
+                    "Key": file_id,
+                    "UploadId": upload_id,
+                    "PartNumber": part_number,
+                    "ContentLength": this_size
+                },
+                ExpiresIn=21600,
+            )
+        part_urls.append(url)
+        remaining = remaining - this_size
 
     return {
         "file_id": file_id,
-        "filename": file.filename,
+        "upload_id": upload_id,
+        "part_size": part_size,
+        "part_urls": part_urls
     }
 
-async def save_file(file):
-    MAX_SIZE = 10 * 1024 * 1024 * 1024
 
-    if file.size is not None and file.size > MAX_SIZE:
-        raise UploadTooLarge
-
-    file_id = secrets.token_hex(6)
-
-    # metadata is sent as HTTP headers, so encode non-ASCII filenames
-    s3.upload_fileobj(
-        file.file,
-        r2_bucket,
-        file_id,
-        ExtraArgs={"Metadata": {"filename": quote(file.filename or "", safe="")}},
-    )
-
-    return file_id
 
 def lookup_file(file_id):
     try:
