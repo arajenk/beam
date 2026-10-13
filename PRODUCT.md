@@ -7,7 +7,7 @@
 web
 
 ## Stack
-React + Vite + TypeScript in `frontend/`, built to static files and hosted on Cloudflare Pages. Backend: FastAPI service (`src/beam/`) using Cloudflare R2 (S3 API) for storage; no database.
+React + Vite + TypeScript in `frontend/`, built to static files and served as a Cloudflare Worker with static assets (https://beam.arajenkajanthira.workers.dev). Backend: FastAPI service (`src/beam/`) using Cloudflare R2 (S3 API) for storage; no database. API hosting planned on Heroku (Basic dyno).
 
 ## Users
 Anyone who needs to move a file to someone (or to another of their own devices) quickly: a friend, a coworker, phone to laptop. No account, no setup; they arrive, send, and leave.
@@ -22,11 +22,12 @@ Zero friction: no account, no email, none of the limits or upsells that come wit
 - Single-file shares in v1. Multi-file shares (pick files or download a zip) are planned later.
 - Share link format: `/f/{id}` with a short hex ID.
 - Files expire about 1 day after upload (R2 lifecycle rule; actual deletion can take up to about 24h longer).
-- Downloads are served directly from R2 through short-lived presigned URLs.
+- Uploads and downloads go directly between the browser and R2 through presigned URLs; the API only signs and checks.
 - Future idea (undecided): peer-to-peer WebRTC transfers for desktop app users.
 
 ## Capabilities and Constraints
-- Max file size: 10 GiB (single presigned PUT supports about 5 GiB; multipart is planned).
+- Max file size: 10 GiB, uploaded as presigned multipart (64 MiB parts, four in parallel).
+- Abuse limits: a Turnstile check to start an upload, 50 GiB per IP per day, 1 TiB total per day. Counters live in memory and reset when the API restarts.
 - No accounts and no authentication: anyone with the link can download.
 - Missing or expired files appear the same to the user (not found).
 - Undecided: exact copy for expiry ("about a day"), desktop app, P2P mode.
