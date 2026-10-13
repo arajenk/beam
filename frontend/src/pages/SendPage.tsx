@@ -6,6 +6,7 @@ import { FileIcon } from "../components/FileIcon";
 import { FileRow } from "../components/FileRow";
 import { ShareLink } from "../components/ShareLink";
 import { Window } from "../components/Window";
+import { getTurnstileToken } from "../turnstile";
 
 type State =
   | { phase: "idle"; note?: string }
@@ -18,6 +19,8 @@ export function SendPage() {
   const [dragging, setDragging] = useState(false);
   const handle = useRef<UploadHandle | null>(null);
   const input = useRef<HTMLInputElement>(null);
+  // Turnstile renders here; empty unless Cloudflare wants a click.
+  const challenge = useRef<HTMLDivElement>(null);
   const dragDepth = useRef(0);
   const busy = state.phase === "uploading";
   // The bar only tracks browser → API; after 100% the API is still sending the file to R2.
@@ -32,8 +35,10 @@ export function SendPage() {
       return;
     }
     setState({ phase: "uploading", file, loaded: 0, skipped: list.length - 1 });
-    const h = uploadFile(file, ({ loaded }) =>
-      setState((s) => (s.phase === "uploading" && s.file === file ? { ...s, loaded } : s)),
+    const h = uploadFile(
+      file,
+      ({ loaded }) => setState((s) => (s.phase === "uploading" && s.file === file ? { ...s, loaded } : s)),
+      () => (challenge.current ? getTurnstileToken(challenge.current) : Promise.reject(new Error("No challenge slot"))),
     );
     handle.current = h;
     h.promise.then(
@@ -45,6 +50,10 @@ export function SendPage() {
         handle.current = null;
         if (err instanceof UploadError && err.kind === "cancelled") {
           setState({ phase: "idle", note: "Upload cancelled. Nothing was sent." });
+        } else if (err instanceof UploadError && err.kind === "limit") {
+          setState({ phase: "error", message: "Beam’s upload limit for today has been reached. Try again tomorrow." });
+        } else if (err instanceof UploadError && err.kind === "verification") {
+          setState({ phase: "error", message: "We couldn’t check that you’re a person. Try again." });
         } else {
           setState({ phase: "error", message: "The upload didn’t go through. Check your connection and try again." });
         }
@@ -151,6 +160,8 @@ export function SendPage() {
           </p>
         </div>
       )}
+
+      <div ref={challenge} className="challenge" />
 
       {state.phase === "done" && (
         <div className="transfer is-done">

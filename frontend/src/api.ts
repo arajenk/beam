@@ -18,7 +18,7 @@ export type UploadHandle = {
 };
 
 export class UploadError extends Error {
-  readonly kind: "too-large" | "cancelled" | "failed";
+  readonly kind: "too-large" | "limit" | "verification" | "cancelled" | "failed";
   constructor(kind: UploadError["kind"], message: string) {
     super(message);
     this.kind = kind;
@@ -44,10 +44,12 @@ type CompletedPart = { part_number: number; etag: string };
 /**
  * Upload one file, reporting progress. Cancel aborts it.
  * Parts go up in parallel over XHR (fetch can't report upload progress).
+ * `getToken` supplies a fresh Turnstile token, which the API checks before starting.
  */
 export function uploadFile(
   file: File,
   onProgress: (p: UploadProgress) => void,
+  getToken: () => Promise<string>,
 ): UploadHandle {
   if (file.size > MAX_SIZE) {
     return {
@@ -67,7 +69,7 @@ export function uploadFile(
     upload &&
     `${API_URL}/uploads/${encodeURIComponent(upload.fileId)}/abort?upload_id=${encodeURIComponent(upload.uploadId)}`;
 
-  // Tell the API to discard the parts. Best-effort: R2's 7-day abort rule is the backstop.
+  // Tell the API to discard the parts. Best-effort: the API's sweeper is the backstop.
   const abortOnServer = () => {
     const url = abortUrl();
     if (url) fetch(url, { method: "POST", keepalive: true }).catch(() => {});
@@ -87,10 +89,15 @@ export function uploadFile(
   };
 
   const run = async (): Promise<UploadResult> => {
+    const token = await getToken().catch(() => {
+      throw new UploadError("verification", "Couldn't verify this browser");
+    });
+    if (cancelled) throw new UploadError("cancelled", "Upload cancelled");
     const start = await postJson<StartResponse>("/uploads", {
       filename: file.name,
       size: file.size,
       content_type: file.type || "application/octet-stream",
+      turnstile_token: token,
     });
     upload = { fileId: start.file_id, uploadId: start.upload_id };
     if (cancelled) throw new UploadError("cancelled", "Upload cancelled");
@@ -152,6 +159,8 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
   if (res.status === 413) throw new UploadError("too-large", "File is over 10 GB");
+  if (res.status === 403) throw new UploadError("verification", "Couldn't verify this browser");
+  if (res.status === 429) throw new UploadError("limit", "Daily upload limit reached");
   if (!res.ok) throw new UploadError("failed", `Request failed (${res.status})`);
   return (await res.json()) as T;
 }

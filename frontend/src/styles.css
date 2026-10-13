@@ -391,6 +391,12 @@ p {
   margin-top: 2px;
 }
 
+/* Turnstile only puts something here when it needs a click */
+.challenge {
+  display: flex;
+  justify-content: center;
+}
+
 /* ── transfer (uploading / done) ──────────────────────────────────────── */
 
 .transfer {
