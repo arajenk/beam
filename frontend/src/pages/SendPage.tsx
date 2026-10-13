@@ -23,7 +23,7 @@ export function SendPage() {
   const challenge = useRef<HTMLDivElement>(null);
   const dragDepth = useRef(0);
   const busy = state.phase === "uploading";
-  // The bar only tracks browser → API; after 100% the API is still sending the file to R2.
+  // The bar counts bytes sent; after 100% R2 still has to confirm the last parts and the API joins them.
   const finishing = state.phase === "uploading" && state.loaded >= state.file.size;
 
   function start(files: FileList | File[]) {
