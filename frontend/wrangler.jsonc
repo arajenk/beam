@@ -1,0 +1,10 @@
+{
+  // Static site only: wrangler uploads the Vite build, no Worker script.
+  "name": "beam",
+  "compatibility_date": "2026-10-13",
+  "assets": {
+    "directory": "./dist",
+    // Unknown paths like /f/abc123 get index.html so React can route them.
+    "not_found_handling": "single-page-application"
+  }
+}
