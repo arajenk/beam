@@ -3,8 +3,11 @@
 //
 // The widget runs a challenge in the browser and hands back a token. The API
 // checks that token with Cloudflare before signing anything. Tokens are
-// single-use and expire after 5 minutes, so we get a fresh one per upload.
-// The widget stays hidden unless Cloudflare decides it needs a click.
+// single-use and expire after 5 minutes, so each upload spends one token.
+// The challenge takes a second or two, so the send page starts it early (when
+// the user opens the file picker or drags a file in) and the upload takes the
+// token that's ready. The widget stays hidden unless Cloudflare decides it
+// needs a click.
 // ─────────────────────────────────────────────────────────────────────────────
 
 type Turnstile = {
@@ -51,7 +54,7 @@ const settle = (fn: (p: NonNullable<typeof pending>) => void) => {
 };
 
 /** Runs the challenge in `container` and resolves with a fresh token. */
-export async function getTurnstileToken(container: HTMLElement): Promise<string> {
+async function challenge(container: HTMLElement): Promise<string> {
   const ts = await load();
   settle((p) => p.reject(new Error("Superseded")));
 
@@ -66,7 +69,11 @@ export async function getTurnstileToken(container: HTMLElement): Promise<string>
         appearance: "interaction-only",
         callback: (token: string) => settle((p) => p.resolve(token)),
         "error-callback": () => settle((p) => p.reject(new Error("Turnstile failed"))),
-        "expired-callback": () => settle((p) => p.reject(new Error("Turnstile expired"))),
+        "expired-callback": () => {
+          // a token that's ready but unused just went stale
+          if (!pending) ready = null;
+          settle((p) => p.reject(new Error("Turnstile expired")));
+        },
       });
       widget = { id, container };
     } else {
@@ -75,4 +82,25 @@ export async function getTurnstileToken(container: HTMLElement): Promise<string>
     }
     ts.execute(widget.id);
   });
+}
+
+// The next upload's token: still being solved, or solved and unused.
+let ready: Promise<string> | null = null;
+
+/** Starts a challenge in the background unless one is already running or solved. */
+export function prepareTurnstile(container: HTMLElement): void {
+  if (ready) return;
+  const attempt = challenge(container);
+  ready = attempt;
+  // A failed early attempt is dropped, so the upload starts a fresh one.
+  attempt.catch(() => {
+    if (ready === attempt) ready = null;
+  });
+}
+
+/** Hands out the prepared token (or solves one now). Each token is handed out once. */
+export function takeTurnstileToken(container: HTMLElement): Promise<string> {
+  const token = ready ?? challenge(container);
+  ready = null;
+  return token;
 }

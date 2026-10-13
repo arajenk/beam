@@ -44,7 +44,7 @@ type CompletedPart = { part_number: number; etag: string };
 /**
  * Upload one file, reporting progress. Cancel aborts it.
  * Parts go up in parallel over XHR (fetch can't report upload progress).
- * `getToken` supplies a fresh Turnstile token, which the API checks before starting.
+ * `getToken` supplies an unused Turnstile token, which the API checks before starting.
  */
 export function uploadFile(
   file: File,
@@ -89,15 +89,22 @@ export function uploadFile(
   };
 
   const run = async (): Promise<UploadResult> => {
-    const token = await getToken().catch(() => {
-      throw new UploadError("verification", "Couldn't verify this browser");
-    });
-    if (cancelled) throw new UploadError("cancelled", "Upload cancelled");
-    const start = await postJson<StartResponse>("/uploads", {
-      filename: file.name,
-      size: file.size,
-      content_type: file.type || "application/octet-stream",
-      turnstile_token: token,
+    const startUpload = async () => {
+      const token = await getToken().catch(() => {
+        throw new UploadError("verification", "Couldn't verify this browser");
+      });
+      if (cancelled) throw new UploadError("cancelled", "Upload cancelled");
+      return postJson<StartResponse>("/uploads", {
+        filename: file.name,
+        size: file.size,
+        content_type: file.type || "application/octet-stream",
+        turnstile_token: token,
+      });
+    };
+    // A prepared token can expire right as it's sent; try once more with a fresh one.
+    const start = await startUpload().catch((err: unknown) => {
+      if (err instanceof UploadError && err.kind === "verification" && !cancelled) return startUpload();
+      throw err;
     });
     upload = { fileId: start.file_id, uploadId: start.upload_id };
     if (cancelled) throw new UploadError("cancelled", "Upload cancelled");

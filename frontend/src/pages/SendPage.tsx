@@ -6,7 +6,7 @@ import { FileIcon } from "../components/FileIcon";
 import { FileRow } from "../components/FileRow";
 import { ShareLink } from "../components/ShareLink";
 import { Window } from "../components/Window";
-import { getTurnstileToken } from "../turnstile";
+import { prepareTurnstile, takeTurnstileToken } from "../turnstile";
 
 type State =
   | { phase: "idle"; note?: string }
@@ -26,6 +26,11 @@ export function SendPage() {
   // The bar counts bytes sent; after 100% R2 still has to confirm the last parts and the API joins them.
   const finishing = state.phase === "uploading" && state.loaded >= state.file.size;
 
+  // Picking a file takes a few seconds; solve the Turnstile challenge meanwhile.
+  function prepare() {
+    if (challenge.current) prepareTurnstile(challenge.current);
+  }
+
   function start(files: FileList | File[]) {
     const list = Array.from(files);
     if (list.length === 0 || busy) return;
@@ -38,7 +43,7 @@ export function SendPage() {
     const h = uploadFile(
       file,
       ({ loaded }) => setState((s) => (s.phase === "uploading" && s.file === file ? { ...s, loaded } : s)),
-      () => (challenge.current ? getTurnstileToken(challenge.current) : Promise.reject(new Error("No challenge slot"))),
+      () => (challenge.current ? takeTurnstileToken(challenge.current) : Promise.reject(new Error("No challenge slot"))),
     );
     handle.current = h;
     h.promise.then(
@@ -67,6 +72,7 @@ export function SendPage() {
     const enter = (e: DragEvent) => {
       if (!hasFiles(e)) return;
       e.preventDefault();
+      if (!busy) prepare();
       dragDepth.current += 1;
       setDragging(true);
     };
@@ -124,7 +130,14 @@ export function SendPage() {
           </div>
           <h2 className="drop-heading">{dragging ? "Let go to send it" : "Drop a file to send it"}</h2>
           <p className="drop-sub">You’ll get a link to share. It stops working after about a day.</p>
-          <button type="button" className="button button-primary button-lg" onClick={() => input.current?.click()}>
+          <button
+            type="button"
+            className="button button-primary button-lg"
+            onClick={() => {
+              prepare();
+              input.current?.click();
+            }}
+          >
             <ArrowUpFromLine size={18} strokeWidth={2.25} />
             <span>Choose a file</span>
           </button>
