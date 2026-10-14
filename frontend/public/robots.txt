@@ -1,0 +1,4 @@
+User-agent: *
+Disallow: /f/
+
+Sitemap: https://beamshare.app/sitemap.xml
