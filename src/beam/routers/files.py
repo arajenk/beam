@@ -9,12 +9,15 @@ import os
 from pydantic import BaseModel, Field
 import math
 import threading
+import asyncio
+import logging
 import time
 import httpx
 
 load_dotenv()
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 account_id = os.environ["R2_ACCOUNT_ID"]
 access_key = os.environ["R2_ACCESS_KEY_ID"]
@@ -25,6 +28,8 @@ PER_IP_LIMIT = 50 * 1024**3
 GLOBAL_LIMIT = 1024**4
 # part URLs last 6h; the extra hour lets a slow last part still call complete
 SWEEP_AFTER = 7 * 60 * 60
+# so a hold lives at most SWEEP_AFTER + SWEEP_EVERY (about 8h)
+SWEEP_EVERY = 60 * 60
 TURNSTILE_SECRET = os.environ["TURNSTILE_SECRET"]
 
 s3 = boto3.client(
@@ -48,7 +53,11 @@ uploads: dict[str, dict] = {}
 
 
 def client_ip(request: Request):
-    # behind Heroku's router this becomes the last X-Forwarded-For entry (deploy step)
+    # on Heroku every request comes through the router, which appends the IP it saw
+    # to X-Forwarded-For; earlier entries come from the client and can be faked
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[-1].strip()
     return request.client.host if request.client else "unknown"
 
 
@@ -253,6 +262,19 @@ def sweep(now=None):
         record = take_record(file_id, upload_id)
         if record:
             release(record["ip"], record["size"])
+
+
+async def sweep_loop(interval=SWEEP_EVERY):
+    """Runs sweep() every interval for as long as the app is up. It must live in the
+    web process, since the holds it releases are in this process's memory."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            # boto3 calls block, so keep them off the event loop
+            await asyncio.to_thread(sweep)
+        except Exception:
+            # one bad run (e.g. R2 unreachable) shouldn't stop sweeping until the next restart
+            logger.exception("sweep failed")
 
 
 def lookup_file(file_id):

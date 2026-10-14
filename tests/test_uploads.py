@@ -11,10 +11,12 @@ Presigning (`generate_presigned_url`) never talks to R2, so it isn't stubbed;
 the `presigned` fixture records those calls instead.
 """
 
+import asyncio
 from urllib.parse import parse_qs, quote, urlparse
 
 import pytest
 from botocore.stub import ANY, Stubber
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 from beam.main import app
@@ -518,3 +520,43 @@ def test_turnstile_unreachable_counts_as_not_verified(monkeypatch):
     monkeypatch.setattr(files.httpx, "post", boom)
 
     assert files.verify_turnstile("tok", "1.2.3.4") is False
+
+
+def make_request(client_host, forwarded_for=None):
+    headers = [] if forwarded_for is None else [(b"x-forwarded-for", forwarded_for.encode())]
+    return Request({"type": "http", "headers": headers, "client": (client_host, 5000)})
+
+
+def test_client_ip_is_the_entry_heroku_added():
+    assert files.client_ip(make_request("10.0.0.1", "203.0.113.7")) == "203.0.113.7"
+
+
+def test_client_ip_ignores_entries_the_client_sent():
+    # Heroku appends what it saw, so only the last entry is trustworthy
+    request = make_request("10.0.0.1", "1.2.3.4, 5.6.7.8, 203.0.113.7")
+    assert files.client_ip(request) == "203.0.113.7"
+
+
+def test_client_ip_without_the_header_is_the_connection():
+    # running locally, nothing sits in front of the app
+    assert files.client_ip(make_request("127.0.0.1")) == "127.0.0.1"
+
+
+def test_sweep_loop_runs_repeatedly_and_survives_errors(monkeypatch):
+    calls = []
+
+    def fake_sweep():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("R2 unreachable")
+
+    monkeypatch.setattr(files, "sweep", fake_sweep)
+
+    async def run_until_three_calls():
+        task = asyncio.create_task(files.sweep_loop(interval=0))
+        while len(calls) < 3:
+            await asyncio.sleep(0.01)
+        task.cancel()
+
+    asyncio.run(asyncio.wait_for(run_until_three_calls(), timeout=5))
+    assert len(calls) >= 3
