@@ -130,7 +130,7 @@ def upload(start: Start, request: Request):
     if not reserve(ip, start.size):
         raise HTTPException(status_code=429, detail="Daily upload limit reached")
 
-    file_id = secrets.token_hex(6)
+    file_id = secrets.token_urlsafe(16)
 
     try:
         multipart = s3.create_multipart_upload(

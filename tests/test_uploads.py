@@ -101,7 +101,7 @@ def test_start_returns_one_url_per_part(client, r2, presigned):
     assert body["upload_id"] == "upload-123"
     assert body["part_size"] == PART_SIZE
     assert len(body["part_urls"]) == 48  # 3 GiB / 64 MiB
-    assert body["file_id"]
+    assert len(body["file_id"]) == 22  # 128 random bits, URL-safe
 
 
 def test_part_urls_are_signed_for_exact_sizes(client, r2, presigned):
