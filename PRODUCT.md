@@ -7,7 +7,7 @@
 web
 
 ## Stack
-React + Vite + TypeScript in `frontend/`, built to static files and served as a Cloudflare Worker with static assets (https://beam.arajenkajanthira.workers.dev). Backend: FastAPI service (`src/beam/`) using Cloudflare R2 (S3 API) for storage; no database. API hosting planned on Heroku (Basic dyno).
+React + Vite + TypeScript in `frontend/`, built to static files and served as a Cloudflare Worker with static assets (https://beamshare.app). Backend: FastAPI service (`src/beam/`) using Cloudflare R2 (S3 API) for storage; no database. API hosted on Heroku (Basic dyno).
 
 ## Users
 Anyone who needs to move a file to someone (or to another of their own devices) quickly: a friend, a coworker, phone to laptop. No account, no setup; they arrive, send, and leave.

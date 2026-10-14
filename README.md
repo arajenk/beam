@@ -2,7 +2,7 @@
 
 Send a file, get a link. Files up to 10 GB, no account, gone after about a day.
 
-**Live:** https://beam.arajenkajanthira.workers.dev (uploads come online once the API is deployed)
+**Live:** https://beamshare.app
 
 ## How it works
 
@@ -62,7 +62,7 @@ Files are stored in R2 under a random ID and deleted after about a day. Anyone w
 - **Storage:** Cloudflare R2
 - **Hosting:** Cloudflare Workers (frontend), Heroku (API)
 - **Bot protection:** Cloudflare Turnstile
-- **Tests:** pytest, 32 tests covering uploads, limits, and cleanup
+- **Tests:** pytest, 36 tests covering uploads, limits, and cleanup
 
 ## Running locally
 
