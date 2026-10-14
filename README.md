@@ -4,24 +4,11 @@ Send a file, get a link. Files up to 10 GB, no account, gone after about a day.
 
 **Live:** https://beamshare.app
 
+https://github.com/user-attachments/assets/4f7951b5-c2cf-4c62-a395-ee78dfdb393d
+
 ## How it works
 
 ### Upload
-
-```mermaid
-sequenceDiagram
-    participant B as Browser
-    participant A as API
-    participant R as R2
-
-    B->>A: start (name, size, token)
-    Note right of A: verify, check limits
-    A-->>B: part URLs
-    B->>R: upload parts
-    B->>A: complete
-    A->>R: check parts, finish
-    A-->>B: share link
-```
 
 1. **Start:** the browser sends the file's name, size, and a Turnstile token. The API checks the token and limits, then returns a presigned URL for each 64 MiB part.
 2. **Upload:** parts go straight to R2, four at a time. Each URL is signed for its part's exact size, so R2 rejects anything bigger.
@@ -62,7 +49,7 @@ Files are stored in R2 under a random ID and deleted after about a day. Anyone w
 - **Storage:** Cloudflare R2
 - **Hosting:** Cloudflare Workers (frontend), Heroku (API)
 - **Bot protection:** Cloudflare Turnstile
-- **Tests:** pytest, 36 tests covering uploads, limits, and cleanup
+- **Tests:** pytest, 49 tests covering uploads, limits, cleanup, and abuse reports
 
 ## Running locally
 
