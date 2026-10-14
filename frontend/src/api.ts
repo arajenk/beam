@@ -237,3 +237,40 @@ export async function getFileInfo(fileId: string): Promise<FileInfo | null> {
 export function downloadUrl(fileId: string): string {
   return `${API_URL}/f/${encodeURIComponent(fileId)}`;
 }
+
+export const ABUSE_EMAIL = "abuse@beamshare.app";
+
+export class ReportError extends Error {
+  readonly kind: "verification" | "unavailable" | "failed";
+  constructor(kind: ReportError["kind"], message: string) {
+    super(message);
+    this.kind = kind;
+  }
+}
+
+/** Sends an abuse report about a file. Like uploads, a rejected token gets one retry with a fresh one. */
+export async function sendReport(
+  fileId: string,
+  reason: string,
+  email: string,
+  getToken: () => Promise<string>,
+): Promise<void> {
+  const attempt = async () => {
+    const token = await getToken().catch(() => {
+      throw new ReportError("verification", "Couldn't verify this browser");
+    });
+    const res = await fetch(`${API_URL}/reports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file_id: fileId, reason, email: email || null, turnstile_token: token }),
+    });
+    if (res.status === 403) throw new ReportError("verification", "Couldn't verify this browser");
+    // 502: our email service failed, so the reporter should email us directly
+    if (res.status === 502) throw new ReportError("unavailable", "Couldn't send the report");
+    if (!res.ok) throw new ReportError("failed", `Report failed (${res.status})`);
+  };
+  await attempt().catch((err: unknown) => {
+    if (err instanceof ReportError && err.kind === "verification") return attempt();
+    throw err;
+  });
+}

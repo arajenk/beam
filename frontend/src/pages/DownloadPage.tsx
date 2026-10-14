@@ -3,6 +3,7 @@ import { ArrowDownToLine, ArrowRight } from "lucide-react";
 import { downloadUrl, getFileInfo, type FileInfo } from "../api";
 import { formatBytes } from "../format";
 import { FileIcon } from "../components/FileIcon";
+import { ReportForm } from "../components/ReportForm";
 import { Window } from "../components/Window";
 
 type State = { phase: "loading" } | { phase: "ready"; info: FileInfo } | { phase: "missing" } | { phase: "error" };
@@ -70,6 +71,7 @@ export function DownloadPage({ fileId }: { fileId: string }) {
               <ArrowDownToLine size={18} strokeWidth={2.25} />
               <span>Download</span>
             </a>
+            <ReportForm fileId={fileId} />
           </>
         )}
       </div>

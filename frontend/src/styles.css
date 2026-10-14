@@ -700,6 +700,138 @@ p {
   }
 }
 
+/* ── report (download page) ──────────────────────────────────────────── */
+
+.report-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 18px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--ink-3);
+  cursor: pointer;
+}
+
+.report-toggle:hover {
+  color: var(--ink);
+  background: var(--line-soft);
+}
+
+.report {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  max-width: 420px;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line-soft);
+  text-align: left;
+}
+
+.report-label {
+  margin-top: 6px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ink-2);
+}
+
+.report-optional {
+  font-weight: 400;
+  color: var(--ink-3);
+}
+
+.report-field {
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--bar);
+  box-shadow: inset 0 0 0 1px var(--line);
+  font: inherit;
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.report-field:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--blue);
+}
+
+.report-reason {
+  resize: vertical;
+  min-height: 84px;
+}
+
+.report .notice {
+  margin-top: 8px;
+}
+
+.report-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.report-done {
+  margin-top: 20px;
+}
+
+/* ── terms & privacy ──────────────────────────────────────────────────── */
+
+.legal {
+  padding: 32px 40px 36px;
+  color: var(--ink-2);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.legal-updated {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+.legal h2 {
+  margin: 26px 0 8px;
+  font-size: 17px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.legal p,
+.legal ul {
+  margin: 0;
+}
+
+.legal ul {
+  padding-left: 20px;
+}
+
+.legal li + li {
+  margin-top: 6px;
+}
+
+.legal a,
+.footer-links a {
+  color: var(--blue);
+}
+
+.footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 18px;
+  margin-top: 8px;
+}
+
 /* ── small screens ────────────────────────────────────────────────────── */
 
 @media (max-width: 640px) {
@@ -721,6 +853,9 @@ p {
   .drop,
   .receive {
     padding: 36px 20px 28px;
+  }
+  .legal {
+    padding: 24px 20px 28px;
   }
   .drop-heading {
     font-size: 25px;
