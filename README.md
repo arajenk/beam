@@ -39,7 +39,7 @@ An R2 lifecycle rule deletes files about a day after upload and clears abandoned
 
 **No database.** R2 already stores the bytes, keeps the filename as object metadata, and handles expiry. A database would just be a second copy to keep in sync.
 
-**Bytes skip the API.** Proxying uploads means the server reads and re-sends every byte and pays for the bandwidth. With presigned URLs the API only signs, and transfer speed depends on the user's connection. Beam's overhead is about 0.6 s per upload (0.2 s to start, 0.4 s to finish, measured locally); a 455 MB file took about 13 s on a home connection.
+**Bytes skip the API.** Proxying uploads means the server reads and re-sends every byte and pays for the bandwidth. With presigned URLs the API only signs, and transfer speed depends on the user's connection. Beam adds about 0.5 s per upload no matter the file size (0.2 s to start, 0.3 s to finish, measured on the live site); a 455 MB file took about 13 s on a home connection.
 
 **Multipart for 10 GB.** A single presigned PUT caps out around 5 GB. 64 MiB parts get past that, upload in parallel, and retry individually.
 
