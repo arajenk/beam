@@ -12,3 +12,9 @@ wheels/
 .env
 .impeccable
 .vibe-wise
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+!.env.example
