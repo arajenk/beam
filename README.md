@@ -4,7 +4,7 @@ Send a file, get a link. Files up to 10 GB, no account, gone after about a day.
 
 **Live:** https://beamshare.app
 
-https://github.com/user-attachments/assets/4f7951b5-c2cf-4c62-a395-ee78dfdb393d
+<video src="https://github.com/user-attachments/assets/4f7951b5-c2cf-4c62-a395-ee78dfdb393d" controls></video>
 
 ## How it works
 
