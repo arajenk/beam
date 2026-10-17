@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from starlette.responses import RedirectResponse
 from botocore.exceptions import ClientError
 from urllib.parse import quote, unquote
@@ -13,6 +13,7 @@ import asyncio
 import logging
 import time
 import httpx
+import json
 
 load_dotenv()
 
@@ -23,6 +24,9 @@ account_id = os.environ["R2_ACCOUNT_ID"]
 access_key = os.environ["R2_ACCESS_KEY_ID"]
 secret_key = os.environ["R2_SECRET_ACCESS_KEY"]
 r2_bucket = "beam"
+# all-time counts live in their own bucket, which has no lifecycle rule
+STATS_BUCKET = "beam-stats"
+STATS_KEY = "counts.json"
 MAX_SIZE = 10 * 1024**3
 PER_IP_LIMIT = 50 * 1024**3
 GLOBAL_LIMIT = 1024**4
@@ -50,6 +54,30 @@ ip_bytes: dict[str, int] = {}
 total_bytes = 0
 # file_id -> {upload_id, ip, size, started_at}, for uploads not yet completed or aborted
 uploads: dict[str, dict] = {}
+
+
+# Held during the R2 read and write, so it's separate from `lock`, which never is.
+# One process means no lost counts; a deploy's brief overlap of two dynos can lose a few.
+stats_lock = threading.Lock()
+
+
+def bump(event):
+    """Adds 1 to the all-time count for event ("uploads" or "downloads").
+    Runs after the response is sent, so a failure only loses this one count."""
+    with stats_lock:
+        try:
+            counts = json.loads(s3.get_object(Bucket=STATS_BUCKET, Key=STATS_KEY)["Body"].read())
+        except ClientError as e:
+            if e.response["Error"]["Code"] not in ("404", "NoSuchKey"):
+                # any other error: skip, rather than overwrite the real total with 1
+                logger.exception("stats read failed")
+                return
+            counts = {"uploads": 0, "downloads": 0}
+        counts[event] = counts.get(event, 0) + 1
+        try:
+            s3.put_object(Bucket=STATS_BUCKET, Key=STATS_KEY, Body=json.dumps(counts).encode(), ContentType="application/json")
+        except ClientError:
+            logger.exception("stats write failed")
 
 
 def client_ip(request: Request):
@@ -194,7 +222,7 @@ def abort(file_id: str, upload_id: str):
         release(record["ip"], record["size"])
 
 @router.post('/uploads/{file_id}/complete')
-def complete(file_id: str, complete_req: Complete):
+def complete(file_id: str, complete_req: Complete, background_tasks: BackgroundTasks):
     try:
         list_of_parts = s3.list_parts(Bucket=r2_bucket, Key=file_id, UploadId=complete_req.upload_id)
     except ClientError as e:
@@ -243,6 +271,7 @@ def complete(file_id: str, complete_req: Complete):
     if record:
         release(record["ip"], record["size"] - total_size)
 
+    background_tasks.add_task(bump, "uploads")
     return {"file_id": file_id}
 
 
@@ -299,7 +328,7 @@ def info(file_id: str):
     }
 
 @router.get('/f/{file_id}')
-def download(file_id: str):
+def download(file_id: str, background_tasks: BackgroundTasks):
     filename, _ = lookup_file(file_id)
 
     url = s3.generate_presigned_url(
@@ -311,4 +340,5 @@ def download(file_id: str):
         },
         ExpiresIn=600,
     )
+    background_tasks.add_task(bump, "downloads")
     return RedirectResponse(url)
