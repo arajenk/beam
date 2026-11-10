@@ -1,6 +1,10 @@
 """
-Spec for presigned multipart uploads. R2 is faked with botocore's Stubber, so
-these run offline in about a second: `uv run pytest -v`.
+Spec for multi-file shares over presigned multipart uploads. R2 is faked with
+botocore's Stubber, so these run offline in about a second: `uv run pytest -v`.
+
+A share is up to 10 files, 10 GiB in total, stored as `share_id/index/name`.
+One start call declares every file and signs everything; complete, abort and
+download are per file; the share page lists whatever finished.
 
 How the fake works: each `stubber.add_response(op, response, expected_params)`
 queues one R2 call. Your code must make exactly those calls, in that order, with
@@ -15,6 +19,7 @@ import asyncio
 from urllib.parse import parse_qs, quote, urlparse
 
 import pytest
+from botocore.exceptions import EndpointConnectionError
 from botocore.stub import ANY, Stubber
 from fastapi import Request
 from fastapi.testclient import TestClient
@@ -27,6 +32,9 @@ MiB = 1024**2
 MAX_SIZE = 10 * GiB
 PART_SIZE = 64 * MiB
 URL_LIFETIME = 6 * 60 * 60
+
+SHARE = "abc123"
+KEY = f"{SHARE}/0/a.bin"
 
 
 @pytest.fixture
@@ -74,192 +82,383 @@ def presigned(monkeypatch):
     return calls
 
 
-def expect_create(r2, filename, content_type, upload_id="upload-123"):
+def f(name="a.bin", size=10, content_type="application/octet-stream"):
+    return {"filename": name, "size": size, "content_type": content_type}
+
+
+def start(client, *specs, token="ok"):
+    body = {"files": list(specs)}
+    if token is not None:
+        body["turnstile_token"] = token
+    return client.post("/uploads", json=body)
+
+
+def expect_create(r2, content_type="application/octet-stream", upload_id="upload-123"):
     r2.add_response(
         "create_multipart_upload",
         {"Bucket": "beam", "Key": "anything", "UploadId": upload_id},
-        {
-            "Bucket": "beam",
-            "Key": ANY,
-            "ContentType": content_type,
-            # same encoding as before: metadata travels as HTTP headers
-            "Metadata": {"filename": quote(filename, safe="")},
-        },
+        # the name lives in the key now, so there's no filename metadata
+        {"Bucket": "beam", "Key": ANY, "ContentType": content_type},
     )
+
+
+def expect_find(r2, uploads, index=0, share=SHARE):
+    """The in-progress uploads R2 has under share/index/, as (key, upload_id) pairs.
+    Like real R2, the listing shows a re-encoded upload id, never the one create returned."""
+    r2.add_response(
+        "list_multipart_uploads",
+        {"Uploads": [{"Key": key, "UploadId": f"listed-{upload_id}-reencoded"} for key, upload_id in uploads]},
+        {"Bucket": "beam", "Prefix": f"{share}/{index}/"},
+    )
+
+
+def expect_list_parts(r2, parts, key=KEY, upload_id="upload-123"):
+    r2.add_response(
+        "list_parts",
+        {"Parts": [{"PartNumber": n, "ETag": etag, "Size": size} for n, etag, size in parts]},
+        {"Bucket": "beam", "Key": key, "UploadId": upload_id},
+    )
+
+
+def expect_listing(r2, objects, prefix=f"{SHARE}/"):
+    """The finished objects R2 has under prefix, as (key, size) pairs."""
+    r2.add_response(
+        "list_objects_v2",
+        {"Contents": [{"Key": key, "Size": size} for key, size in objects]} if objects else {},
+        {"Bucket": "beam", "Prefix": prefix},
+    )
+
+
+def complete(client, parts=((1, '"e1"'),), index=0, upload_id="upload-123"):
+    return client.post(
+        f"/uploads/{SHARE}/{index}/complete",
+        json={"upload_id": upload_id, "parts": [{"part_number": n, "etag": e} for n, e in parts]},
+    )
+
+
+def abort(client, index=0, upload_id="upload-123"):
+    return client.post(f"/uploads/{SHARE}/{index}/abort", params={"upload_id": upload_id})
 
 
 # ── POST /uploads (start) ────────────────────────────────────────────────────
 
 
-def test_start_returns_one_url_per_part(client, r2, presigned):
-    expect_create(r2, "big.mov", "video/quicktime")
+def test_start_makes_one_share_with_an_upload_per_file(client, r2, presigned):
+    expect_create(r2, "video/quicktime", upload_id="upload-a")
+    expect_create(r2, "text/plain", upload_id="upload-b")
 
-    r = client.post("/uploads", json={"turnstile_token": "ok", "filename": "big.mov", "size": 3 * GiB, "content_type": "video/quicktime"})
+    r = start(client, f("big.mov", 3 * GiB, "video/quicktime"), f("notes.txt", 10, "text/plain"))
 
     assert r.status_code == 200
     body = r.json()
-    assert body["upload_id"] == "upload-123"
+    share_id = body["share_id"]
+    assert len(share_id) == 22  # 128 random bits, URL-safe
     assert body["part_size"] == PART_SIZE
-    assert len(body["part_urls"]) == 48  # 3 GiB / 64 MiB
-    assert len(body["file_id"]) == 22  # 128 random bits, URL-safe
+    a, b = body["files"]
+    assert (a["index"], a["filename"], a["upload_id"], len(a["part_urls"])) == (0, "big.mov", "upload-a", 48)
+    assert (b["index"], b["filename"], b["upload_id"], len(b["part_urls"])) == (1, "notes.txt", "upload-b", 1)
+    keys = {c["params"]["Key"] for c in presigned}
+    assert keys == {f"{share_id}/0/big.mov", f"{share_id}/1/notes.txt"}
 
 
 def test_part_urls_are_signed_for_exact_sizes(client, r2, presigned):
     # 100 MiB + 1 byte → one full 64 MiB part and a smaller last part
     size = 100 * MiB + 1
-    expect_create(r2, "a.zip", "application/zip")
+    expect_create(r2, "application/zip")
 
-    r = client.post("/uploads", json={"turnstile_token": "ok", "filename": "a.zip", "size": size, "content_type": "application/zip"})
+    r = start(client, f("a.zip", size, "application/zip"))
 
     assert r.status_code == 200
-    file_id = r.json()["file_id"]
+    key = f"{r.json()['share_id']}/0/a.zip"
     assert [c["method"] for c in presigned] == ["upload_part", "upload_part"]
     assert [c["params"]["PartNumber"] for c in presigned] == [1, 2]
     assert [c["params"]["ContentLength"] for c in presigned] == [PART_SIZE, size - PART_SIZE]
     for c in presigned:
         assert c["params"]["Bucket"] == "beam"
-        assert c["params"]["Key"] == file_id
+        assert c["params"]["Key"] == key
         assert c["params"]["UploadId"] == "upload-123"
         assert c["expires"] == URL_LIFETIME
 
 
 def test_part_urls_make_r2_enforce_content_length(client, r2, presigned):
-    expect_create(r2, "a.txt", "text/plain")
+    expect_create(r2, "text/plain")
 
-    r = client.post("/uploads", json={"turnstile_token": "ok", "filename": "a.txt", "size": 10, "content_type": "text/plain"})
+    r = start(client, f("a.txt", 10, "text/plain"))
 
-    url = r.json()["part_urls"][0]
+    url = r.json()["files"][0]["part_urls"][0]
     signed_headers = parse_qs(urlparse(url).query)["X-Amz-SignedHeaders"][0].split(";")
     assert "content-length" in signed_headers
 
 
-def test_small_file_is_a_single_part(client, r2, presigned):
-    expect_create(r2, "note.txt", "text/plain")
+def test_exactly_10_gib_in_total_is_allowed(client, r2, presigned):
+    expect_create(r2)
+    expect_create(r2)
 
-    r = client.post("/uploads", json={"turnstile_token": "ok", "filename": "note.txt", "size": 10, "content_type": "text/plain"})
-
-    assert len(r.json()["part_urls"]) == 1
-    assert presigned[0]["params"]["ContentLength"] == 10
-
-
-def test_exactly_10_gib_is_allowed(client, r2, presigned):
-    expect_create(r2, "max.bin", "application/octet-stream")
-
-    r = client.post("/uploads", json={"turnstile_token": "ok", "filename": "max.bin", "size": MAX_SIZE, "content_type": "application/octet-stream"})
+    r = start(client, f("a.bin", 4 * GiB), f("b.bin", 6 * GiB))
 
     assert r.status_code == 200
-    assert len(r.json()["part_urls"]) == 160
+    assert sum(len(x["part_urls"]) for x in r.json()["files"]) == 160
 
 
-def test_over_10_gib_is_refused_before_touching_r2(client, r2, presigned):
-    # nothing queued on r2: any R2 call here fails the test
-    r = client.post("/uploads", json={"turnstile_token": "ok", "filename": "huge.bin", "size": MAX_SIZE + 1, "content_type": "application/octet-stream"})
+def test_over_10_gib_in_total_is_refused_before_touching_r2(client, r2, presigned):
+    # each file is small enough alone; together they're one byte over
+    r = start(client, f("a.bin", 4 * GiB), f("b.bin", 6 * GiB + 1))
 
     assert r.status_code == 413
     assert presigned == []
+    assert files.total_bytes == 0
+
+
+def test_one_file_over_10_gib_is_refused(client, r2, presigned):
+    r = start(client, f("huge.bin", MAX_SIZE + 1))
+
+    assert r.status_code == 413
+
+
+def test_ten_files_are_allowed(client, r2, presigned):
+    for _ in range(10):
+        expect_create(r2)
+
+    r = start(client, *[f(f"{i}.txt") for i in range(10)])
+
+    assert r.status_code == 200
+    assert [x["index"] for x in r.json()["files"]] == list(range(10))
+
+
+def test_eleven_files_are_refused(client, r2, presigned):
+    r = start(client, *[f(f"{i}.txt") for i in range(11)])
+
+    assert r.status_code == 422
+    assert presigned == []
+
+
+def test_a_share_needs_at_least_one_file(client, r2):
+    assert start(client).status_code == 422
 
 
 @pytest.mark.parametrize("size", [0, -5])
 def test_empty_or_negative_size_is_rejected(client, r2, size):
-    r = client.post("/uploads", json={"turnstile_token": "ok", "filename": "x", "size": size, "content_type": "text/plain"})
-
-    assert r.status_code == 422
+    assert start(client, f(size=size)).status_code == 422
 
 
-# ── POST /uploads/{file_id}/complete ─────────────────────────────────────────
+def test_same_names_get_their_own_keys(client, r2, presigned):
+    expect_create(r2)
+    expect_create(r2)
+
+    r = start(client, f("photo.jpg"), f("photo.jpg"))
+
+    share_id = r.json()["share_id"]
+    assert {c["params"]["Key"] for c in presigned} == {f"{share_id}/0/photo.jpg", f"{share_id}/1/photo.jpg"}
 
 
-def expect_list_parts(r2, parts, file_id="abc123", upload_id="upload-123"):
-    r2.add_response(
-        "list_parts",
-        {"Parts": [{"PartNumber": n, "ETag": etag, "Size": size} for n, etag, size in parts]},
-        {"Bucket": "beam", "Key": file_id, "UploadId": upload_id},
-    )
+def test_start_cleans_the_name_that_goes_into_the_key(client, r2, presigned):
+    expect_create(r2)
+
+    r = start(client, f("../evil/x.txt"))
+
+    share_id = r.json()["share_id"]
+    assert r.json()["files"][0]["filename"] == ".._evil_x.txt"
+    assert presigned[0]["params"]["Key"] == f"{share_id}/0/.._evil_x.txt"
+
+
+# ── filename cleanup ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "raw, clean",
+    [
+        ("report.pdf", "report.pdf"),
+        ("a/b\\c.txt", "a_b_c.txt"),
+        ("line\nbreak\x00.txt", "line_break_.txt"),
+        ("  spaced.txt  ", "spaced.txt"),
+        ("résumé 日本.docx", "résumé 日本.docx"),
+        ("", "file"),
+        ("   ", "file"),
+        # browsers collapse dot segments in URLs, which breaks the signed key
+        (".", "file"),
+        ("..", "file"),
+        ("...", "file"),
+        ("..notes.txt", "..notes.txt"),
+        # invisible characters that can disguise the extension
+        ("a\u202egpj.exe", "a_gpj.exe"),  # right-to-left override: shows as "aexe.jpg"
+        ("a\u200bb.txt", "a_b.txt"),  # zero-width space
+        ("a\u2028b.txt", "a_b.txt"),  # line separator
+    ],
+)
+def test_clean_name(raw, clean):
+    assert files.clean_name(raw) == clean
+
+
+def test_long_names_are_trimmed_but_keep_their_extension():
+    name = files.clean_name("x" * 300 + ".pdf")
+
+    assert len(name.encode()) <= files.NAME_LIMIT
+    assert name.endswith(".pdf")
+
+
+def test_trimming_never_splits_a_character():
+    # 3 bytes each in UTF-8; a cut mid-character would leave invalid bytes
+    name = files.clean_name("日" * 100 + ".txt")
+
+    assert len(name.encode()) <= files.NAME_LIMIT
+    assert name.endswith(".txt")
+    assert set(name[:-4]) == {"日"}
+
+
+def test_a_long_name_without_an_extension_is_just_trimmed():
+    name = files.clean_name("y" * 300)
+
+    assert name == "y" * files.NAME_LIMIT
+
+
+# ── POST /uploads/{share_id}/{index}/complete ────────────────────────────────
 
 
 def test_complete_joins_the_parts(client, r2):
+    expect_find(r2, [(KEY, "upload-123")])
     expect_list_parts(r2, [(1, '"e1"', PART_SIZE), (2, '"e2"', 5)])
     r2.add_response(
         "complete_multipart_upload",
         {},
         {
             "Bucket": "beam",
-            "Key": "abc123",
+            "Key": KEY,
             "UploadId": "upload-123",
             "MultipartUpload": {"Parts": [{"PartNumber": 1, "ETag": '"e1"'}, {"PartNumber": 2, "ETag": '"e2"'}]},
         },
     )
 
-    r = client.post(
-        "/uploads/abc123/complete",
-        json={"upload_id": "upload-123", "parts": [{"part_number": 1, "etag": '"e1"'}, {"part_number": 2, "etag": '"e2"'}]},
-    )
+    r = complete(client, [(2, '"e2"'), (1, '"e1"')])
 
     assert r.status_code == 200
-    assert r.json() == {"file_id": "abc123"}
+    assert r.json() == {"share_id": SHARE, "index": 0}
+
+
+def test_complete_finds_the_key_even_after_a_restart(client, r2):
+    # no record in memory (the dyno restarted mid-upload); R2 still knows the key
+    expect_find(r2, [("abc123/3/thesis.pdf", "upload-9")], index=3)
+    expect_list_parts(r2, [(1, '"e1"', 5)], key="abc123/3/thesis.pdf", upload_id="upload-9")
+    r2.add_response("complete_multipart_upload", {}, None)
+
+    r = complete(client, index=3, upload_id="upload-9")
+
+    assert r.status_code == 200
 
 
 def test_complete_refuses_when_r2_holds_more_than_10_gib(client, r2):
-    # the browser claims 2 parts, but R2's own record is what counts
+    expect_find(r2, [(KEY, "upload-123")])
     expect_list_parts(r2, [(1, '"e1"', 6 * GiB), (2, '"e2"', 5 * GiB)])
     # an oversized upload can never be fixed, so its parts are discarded right away
-    r2.add_response(
-        "abort_multipart_upload",
-        {},
-        {"Bucket": "beam", "Key": "abc123", "UploadId": "upload-123"},
-    )
+    r2.add_response("abort_multipart_upload", {}, {"Bucket": "beam", "Key": KEY, "UploadId": "upload-123"})
 
-    r = client.post(
-        "/uploads/abc123/complete",
-        json={"upload_id": "upload-123", "parts": [{"part_number": 1, "etag": '"e1"'}, {"part_number": 2, "etag": '"e2"'}]},
-    )
+    r = complete(client, [(1, '"e1"'), (2, '"e2"')])
 
     assert r.status_code == 413  # aborted, and complete_multipart_upload was never called
 
 
 def test_complete_refuses_when_a_part_is_missing(client, r2):
-    # browser says it uploaded 2 parts, R2 only has part 1
+    expect_find(r2, [(KEY, "upload-123")])
     expect_list_parts(r2, [(1, '"e1"', PART_SIZE)])
 
-    r = client.post(
-        "/uploads/abc123/complete",
-        json={"upload_id": "upload-123", "parts": [{"part_number": 1, "etag": '"e1"'}, {"part_number": 2, "etag": '"e2"'}]},
-    )
+    r = complete(client, [(1, '"e1"'), (2, '"e2"')])
 
     assert r.status_code == 400
 
 
 def test_complete_unknown_upload_is_404(client, r2):
+    expect_find(r2, [])
+
+    assert complete(client).status_code == 404
+
+
+def test_complete_ignores_an_upload_outside_this_share(client, r2):
+    # if R2 ever returned an upload outside the prefix, matching the id alone isn't enough
+    expect_find(r2, [("other-share/0/a.bin", "upload-123")])
+
+    assert complete(client).status_code == 404
+
+
+def test_complete_with_someone_elses_upload_id_is_404(client, r2):
+    # an upload exists at this index, but R2 rejects the id the client sent for that key
+    expect_find(r2, [(KEY, "upload-123")])
     r2.add_client_error("list_parts", service_error_code="NoSuchUpload", http_status_code=404)
 
-    r = client.post("/uploads/abc123/complete", json={"upload_id": "nope", "parts": [{"part_number": 1, "etag": '"e1"'}]})
-
-    assert r.status_code == 404
+    assert complete(client, upload_id="made-up").status_code == 404
 
 
-# ── POST /uploads/{file_id}/abort ────────────────────────────────────────────
+# ── POST /uploads/{share_id}/{index}/abort ───────────────────────────────────
 
 
 def test_abort_discards_the_parts(client, r2):
-    r2.add_response(
-        "abort_multipart_upload",
-        {},
-        {"Bucket": "beam", "Key": "abc123", "UploadId": "upload-123"},
-    )
+    expect_find(r2, [(KEY, "upload-123")])
+    r2.add_response("abort_multipart_upload", {}, {"Bucket": "beam", "Key": KEY, "UploadId": "upload-123"})
 
-    r = client.post("/uploads/abc123/abort", params={"upload_id": "upload-123"})
+    r = abort(client)
 
     assert r.status_code == 204
     assert r.content == b""  # 204 means no body
 
 
 def test_abort_of_finished_upload_still_succeeds(client, r2):
-    # already completed or aborted: too late to cancel, nothing left to do
+    # already completed or aborted: nothing in progress, nothing left to do
+    expect_find(r2, [])
+
+    assert abort(client).status_code == 204
+
+
+def test_abort_racing_another_abort_still_succeeds(client, r2):
+    expect_find(r2, [(KEY, "upload-123")])
     r2.add_client_error("abort_multipart_upload", service_error_code="NoSuchUpload", http_status_code=404)
 
-    r = client.post("/uploads/abc123/abort", params={"upload_id": "upload-123"})
+    assert abort(client).status_code == 204
 
-    assert r.status_code == 204
+
+# ── GET /f/{share_id}/info and /f/{share_id}/{index} ─────────────────────────
+
+
+def test_info_lists_the_finished_files_in_order(client, r2):
+    # file 1 never finished, so R2 doesn't list it; the share shows the other two
+    expect_listing(r2, [("abc123/2/b.txt", 5), ("abc123/0/a b.png", 1234)])
+
+    r = client.get(f"/f/{SHARE}/info")
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "share_id": SHARE,
+        "files": [
+            {"index": 0, "filename": "a b.png", "size": 1234},
+            {"index": 2, "filename": "b.txt", "size": 5},
+        ],
+    }
+
+
+def test_info_of_unknown_share_is_404(client, r2):
+    expect_listing(r2, [])
+
+    assert client.get(f"/f/{SHARE}/info").status_code == 404
+
+
+def test_download_redirects_to_that_one_file(client, r2, presigned):
+    expect_listing(r2, [("abc123/1/résumé.pdf", 10)], prefix=f"{SHARE}/1/")
+
+    r = client.get(f"/f/{SHARE}/1", follow_redirects=False)
+
+    assert r.status_code == 307
+    (call,) = presigned
+    assert call["method"] == "get_object"
+    assert call["params"]["Key"] == "abc123/1/résumé.pdf"
+    assert call["params"]["ResponseContentDisposition"] == f"attachment; filename*=UTF-8''{quote('résumé.pdf', safe='')}"
+    assert call["expires"] == 600
+
+
+def test_download_of_missing_file_is_404(client, r2):
+    expect_listing(r2, [], prefix=f"{SHARE}/4/")
+
+    assert client.get(f"/f/{SHARE}/4", follow_redirects=False).status_code == 404
+
+
+def test_old_single_file_download_is_gone(client):
+    assert client.get(f"/f/{SHARE}", follow_redirects=False).status_code == 404
 
 
 # ── the old relay endpoint ───────────────────────────────────────────────────
@@ -273,10 +472,11 @@ def test_old_upload_endpoint_is_gone(client):
 
 # ── abuse limits: Turnstile, holds, settling, sweeping ──────────────────────
 #
-# Every start holds its declared size against the uploader's IP and the global
-# total. Complete settles the hold to the real size; abort and the sweeper
-# release it. The record in files.uploads is the ticket: whoever removes it
-# adjusts the counters, so a hold is released exactly once.
+# Every start holds the share's declared total against the uploader's IP and
+# the global total, with one record per file. Complete settles a file's hold to
+# its real size; abort and the sweeper release it. The record in files.uploads
+# is the ticket: whoever removes it adjusts the counters, so a hold is released
+# exactly once.
 
 IP = "testclient"  # what TestClient reports as the client address
 PER_IP_LIMIT = 50 * GiB
@@ -284,16 +484,9 @@ GLOBAL_LIMIT = 1024 * GiB
 SWEEP_AFTER = 7 * 60 * 60
 
 
-def start_body(size, token="ok"):
-    body = {"filename": "a.bin", "size": size, "content_type": "application/octet-stream"}
-    if token is not None:
-        body["turnstile_token"] = token
-    return body
-
-
-def hold(file_id="abc123", upload_id="upload-123", ip=IP, size=100 * MiB, started_at=None):
-    """Put an upload in the state start leaves it in: record written, size held."""
-    files.uploads[file_id] = {
+def hold(key=KEY, upload_id="upload-123", ip=IP, size=100 * MiB, started_at=None):
+    """Put a file in the state start leaves it in: record written, size held."""
+    files.uploads[key] = {
         "upload_id": upload_id,
         "ip": ip,
         "size": size,
@@ -304,7 +497,7 @@ def hold(file_id="abc123", upload_id="upload-123", ip=IP, size=100 * MiB, starte
 
 
 def test_start_without_token_is_403_before_anything(client, r2, fresh_limits):
-    r = client.post("/uploads", json=start_body(10, token=None))
+    r = start(client, f(), token=None)
 
     assert r.status_code == 403
     assert fresh_limits == []  # no point asking Cloudflare about nothing
@@ -312,34 +505,35 @@ def test_start_without_token_is_403_before_anything(client, r2, fresh_limits):
 
 
 def test_start_with_invalid_token_is_403(client, r2, presigned):
-    r = client.post("/uploads", json=start_body(10, token="forged"))
+    r = start(client, f(), token="forged")
 
     assert r.status_code == 403
     assert presigned == []
     assert files.total_bytes == 0
 
 
-def test_start_holds_the_declared_size(client, r2, presigned):
-    expect_create(r2, "a.bin", "application/octet-stream")
+def test_start_holds_the_declared_total_with_a_record_per_file(client, r2, presigned):
+    expect_create(r2, upload_id="upload-a")
+    expect_create(r2, upload_id="upload-b")
 
-    r = client.post("/uploads", json=start_body(3 * GiB))
+    r = start(client, f("a.bin", 3 * GiB), f("b.bin", 1 * GiB))
 
     assert r.status_code == 200
-    file_id = r.json()["file_id"]
-    assert files.ip_bytes[IP] == 3 * GiB
-    assert files.total_bytes == 3 * GiB
-    record = files.uploads[file_id]
-    assert record["upload_id"] == "upload-123"
-    assert record["ip"] == IP
-    assert record["size"] == 3 * GiB
+    share_id = r.json()["share_id"]
+    assert files.ip_bytes[IP] == 4 * GiB
+    assert files.total_bytes == 4 * GiB
+    a = files.uploads[f"{share_id}/0/a.bin"]
+    b = files.uploads[f"{share_id}/1/b.bin"]
+    assert (a["upload_id"], a["ip"], a["size"]) == ("upload-a", IP, 3 * GiB)
+    assert (b["upload_id"], b["ip"], b["size"]) == ("upload-b", IP, 1 * GiB)
 
 
 def test_start_up_to_the_ip_limit_is_allowed(client, r2, presigned):
     files.ip_bytes[IP] = PER_IP_LIMIT - 10
     files.total_bytes = PER_IP_LIMIT - 10
-    expect_create(r2, "a.bin", "application/octet-stream")
+    expect_create(r2)
 
-    r = client.post("/uploads", json=start_body(10))
+    r = start(client, f(size=10))
 
     assert r.status_code == 200
     assert files.ip_bytes[IP] == PER_IP_LIMIT
@@ -349,7 +543,7 @@ def test_start_over_the_ip_limit_is_429_and_holds_nothing(client, r2, presigned)
     files.ip_bytes[IP] = PER_IP_LIMIT - 10
     files.total_bytes = PER_IP_LIMIT - 10
 
-    r = client.post("/uploads", json=start_body(11))
+    r = start(client, f(size=5), f(size=6))
 
     assert r.status_code == 429
     assert presigned == []  # nothing queued on r2 either: R2 is never touched
@@ -361,50 +555,78 @@ def test_start_over_the_global_cap_is_429(client, r2, presigned):
     # other IPs have used up nearly everything; this IP has used nothing
     files.total_bytes = GLOBAL_LIMIT - 10
 
-    r = client.post("/uploads", json=start_body(11))
+    r = start(client, f(size=11))
 
     assert r.status_code == 429
     assert IP not in files.ip_bytes
     assert files.total_bytes == GLOBAL_LIMIT - 10
 
 
-def test_start_releases_the_hold_if_r2_fails(client, r2, presigned):
+def test_start_cleans_up_if_r2_fails_partway(client, r2, presigned):
+    # the first file's upload was created, the second's failed
+    expect_create(r2, upload_id="upload-a")
     r2.add_client_error("create_multipart_upload", service_error_code="InternalError", http_status_code=500)
+    r2.add_response("abort_multipart_upload", {}, {"Bucket": "beam", "Key": ANY, "UploadId": "upload-a"})
 
     with pytest.raises(Exception):
-        client.post("/uploads", json=start_body(3 * GiB))
+        start(client, f("a.bin", 3 * GiB), f("b.bin", 1 * GiB))
 
     assert files.total_bytes == 0
     assert IP not in files.ip_bytes
     assert files.uploads == {}
 
 
+def test_start_releases_the_hold_even_if_cleanup_fails(client, r2, presigned, monkeypatch):
+    # R2 drops the connection: the second create fails, and so does the undo of the first
+    expect_create(r2, upload_id="upload-a")
+    r2.add_client_error("create_multipart_upload", service_error_code="InternalError", http_status_code=500)
+
+    def unreachable(**kwargs):
+        raise EndpointConnectionError(endpoint_url="https://r2.example")
+
+    monkeypatch.setattr(files.s3, "abort_multipart_upload", unreachable)
+
+    with pytest.raises(Exception):
+        start(client, f("a.bin", 3 * GiB), f("b.bin", 1 * GiB))
+
+    assert files.total_bytes == 0
+    assert IP not in files.ip_bytes
+
+
 def test_complete_settles_the_hold_to_the_real_size(client, r2):
     # declared 200 MiB, but only 70 MiB actually landed in R2
     hold(size=200 * MiB)
+    expect_find(r2, [(KEY, "upload-123")])
     expect_list_parts(r2, [(1, '"e1"', PART_SIZE), (2, '"e2"', 6 * MiB)])
     r2.add_response("complete_multipart_upload", {}, None)
 
-    r = client.post(
-        "/uploads/abc123/complete",
-        json={"upload_id": "upload-123", "parts": [{"part_number": 1, "etag": '"e1"'}, {"part_number": 2, "etag": '"e2"'}]},
-    )
+    r = complete(client, [(1, '"e1"'), (2, '"e2"')])
 
     assert r.status_code == 200
     assert files.ip_bytes[IP] == 70 * MiB
     assert files.total_bytes == 70 * MiB
-    assert "abc123" not in files.uploads  # settled, so the sweeper leaves it alone
+    assert KEY not in files.uploads  # settled, so the sweeper leaves it alone
+
+
+def test_completing_one_file_leaves_the_others_held(client, r2):
+    hold(size=200 * MiB)
+    hold(key="abc123/1/b.bin", upload_id="upload-b", size=1 * GiB)
+    expect_find(r2, [(KEY, "upload-123")])
+    expect_list_parts(r2, [(1, '"e1"', 200 * MiB)])
+    r2.add_response("complete_multipart_upload", {}, None)
+
+    assert complete(client).status_code == 200
+    assert files.total_bytes == 200 * MiB + 1 * GiB
+    assert set(files.uploads) == {"abc123/1/b.bin"}
 
 
 def test_complete_413_releases_the_whole_hold(client, r2):
     hold(size=10 * GiB)
+    expect_find(r2, [(KEY, "upload-123")])
     expect_list_parts(r2, [(1, '"e1"', 6 * GiB), (2, '"e2"', 5 * GiB)])
     r2.add_response("abort_multipart_upload", {}, None)
 
-    r = client.post(
-        "/uploads/abc123/complete",
-        json={"upload_id": "upload-123", "parts": [{"part_number": 1, "etag": '"e1"'}, {"part_number": 2, "etag": '"e2"'}]},
-    )
+    r = complete(client, [(1, '"e1"'), (2, '"e2"')])
 
     assert r.status_code == 413
     assert files.total_bytes == 0
@@ -413,26 +635,26 @@ def test_complete_413_releases_the_whole_hold(client, r2):
 
 def test_complete_mismatch_keeps_the_hold_so_the_client_can_retry(client, r2):
     hold(size=200 * MiB)
+    expect_find(r2, [(KEY, "upload-123")])
     expect_list_parts(r2, [(1, '"e1"', PART_SIZE)])
 
-    r = client.post(
-        "/uploads/abc123/complete",
-        json={"upload_id": "upload-123", "parts": [{"part_number": 1, "etag": '"e1"'}, {"part_number": 2, "etag": '"e2"'}]},
-    )
+    r = complete(client, [(1, '"e1"'), (2, '"e2"')])
 
     assert r.status_code == 400
     assert files.total_bytes == 200 * MiB
-    assert "abc123" in files.uploads
+    assert KEY in files.uploads
 
 
 def test_abort_releases_the_hold_once(client, r2):
     hold(size=200 * MiB)
+    expect_find(r2, [(KEY, "upload-123")])
     r2.add_response("abort_multipart_upload", {}, None)
-    r2.add_client_error("abort_multipart_upload", service_error_code="NoSuchUpload", http_status_code=404)
+    # the second time, R2 no longer has the upload
+    expect_find(r2, [])
 
-    first = client.post("/uploads/abc123/abort", params={"upload_id": "upload-123"})
+    first = abort(client)
     # the Cancel button and the tab-close beacon can both fire
-    second = client.post("/uploads/abc123/abort", params={"upload_id": "upload-123"})
+    second = abort(client)
 
     assert first.status_code == second.status_code == 204
     assert files.total_bytes == 0  # not negative
@@ -441,26 +663,27 @@ def test_abort_releases_the_hold_once(client, r2):
 
 
 def test_abort_with_wrong_upload_id_releases_nothing(client, r2):
-    # someone pairs your file_id with a made-up upload_id: R2 says no such upload
+    # someone pairs your share and index with a made-up upload_id; R2 refuses the pair
     hold(size=200 * MiB)
+    expect_find(r2, [(KEY, "upload-123")])
     r2.add_client_error("abort_multipart_upload", service_error_code="NoSuchUpload", http_status_code=404)
 
-    r = client.post("/uploads/abc123/abort", params={"upload_id": "made-up"})
+    r = abort(client, upload_id="made-up")
 
     assert r.status_code == 204
     assert files.total_bytes == 200 * MiB
-    assert "abc123" in files.uploads
+    assert KEY in files.uploads
 
 
 def test_sweep_aborts_and_releases_only_old_uploads(r2):
     now = 1_000_000.0
-    hold("old", "upload-old", size=5 * GiB, started_at=now - SWEEP_AFTER - 1)
-    hold("young", "upload-young", size=1 * GiB, started_at=now - SWEEP_AFTER + 60)
-    r2.add_response("abort_multipart_upload", {}, {"Bucket": "beam", "Key": "old", "UploadId": "upload-old"})
+    hold("old/0/a", "upload-old", size=5 * GiB, started_at=now - SWEEP_AFTER - 1)
+    hold("young/0/a", "upload-young", size=1 * GiB, started_at=now - SWEEP_AFTER + 60)
+    r2.add_response("abort_multipart_upload", {}, {"Bucket": "beam", "Key": "old/0/a", "UploadId": "upload-old"})
 
     files.sweep(now=now)
 
-    assert set(files.uploads) == {"young"}
+    assert set(files.uploads) == {"young/0/a"}
     assert files.total_bytes == 1 * GiB
     assert files.ip_bytes[IP] == 1 * GiB
 
@@ -485,7 +708,7 @@ def test_sweep_keeps_the_hold_if_r2_abort_fails(r2):
 
     files.sweep(now=now)
 
-    assert "abc123" in files.uploads
+    assert KEY in files.uploads
     assert files.total_bytes == 5 * GiB
 
 

@@ -1,6 +1,6 @@
 # Beam
 
-Send a file, get a link. Files up to 10 GB, no account, gone after about a day.
+Send up to 10 files, get one link. Up to 10 GB in total, no account, gone after about a day.
 
 **Live:** https://beamshare.app
 
@@ -10,13 +10,13 @@ https://github.com/user-attachments/assets/10cc9810-813d-4094-a9c5-316e8418fe67
 
 ### Upload
 
-1. **Start:** the browser sends the file's name, size, and a Turnstile token. The API checks the token and limits, then returns a presigned URL for each 64 MiB part.
+1. **Start:** the browser sends each file's name and size plus a Turnstile token. The API checks the token and limits (10 files, 10 GB total), then returns presigned URLs for every 64 MiB part of every file.
 2. **Upload:** parts go straight to R2, four at a time. Each URL is signed for its part's exact size, so R2 rejects anything bigger.
 3. **Complete:** the API asks R2 which parts arrived instead of trusting the browser, then finishes the upload.
 
 ### Download
 
-`/f/{id}` checks the file exists, signs a 10-minute R2 URL with the original filename, and redirects to it.
+`/f/{share}/info` lists the finished files in one R2 call, and `/f/{share}/{n}` signs a 10-minute URL for that file and redirects to it.
 
 ### Expiry
 
@@ -24,7 +24,7 @@ An R2 lifecycle rule deletes files about a day after upload and clears abandoned
 
 ## Design decisions
 
-**No database.** R2 already stores the bytes, keeps the filename as object metadata, and handles expiry. A database would just be a second copy to keep in sync.
+**No database.** R2 already stores the bytes, keeps each file's name in its key (`share/index/name`), so listing a share is one call, and handles expiry. A database would just be a second copy to keep in sync.
 
 **Bytes skip the API.** Proxying uploads means the server reads and re-sends every byte and pays for the bandwidth. With presigned URLs the API only signs, and transfer speed depends on the user's connection. Beam adds about 0.5 s per upload no matter the file size (0.2 s to start, 0.3 s to finish, measured on the live site); a 455 MB file took about 13 s on a home connection.
 
@@ -49,7 +49,7 @@ Files are stored in R2 under a random ID and deleted after about a day. Anyone w
 - **Storage:** Cloudflare R2
 - **Hosting:** Cloudflare Workers (frontend), Heroku (API)
 - **Bot protection:** Cloudflare Turnstile
-- **Tests:** pytest, 58 tests covering uploads, limits, cleanup, abuse reports, and stats
+- **Tests:** pytest (92) and Vitest (29) covering uploads, limits, timeouts, cleanup, abuse reports, and stats
 
 ## Running locally
 

@@ -33,7 +33,7 @@ def fakes(monkeypatch):
         return FakeResponse()
 
     monkeypatch.setattr(files, "verify_turnstile", lambda token, ip: token == "ok")
-    monkeypatch.setattr(files, "lookup_file", lambda file_id: ("invoice.exe", 2 * 1024**2))
+    monkeypatch.setattr(files, "list_share", lambda share_id: [{"index": 0, "filename": "invoice.exe", "size": 2 * 1024**2}])
     monkeypatch.setattr(reports.httpx, "post", fake_post)
     monkeypatch.setenv("RESEND_API_KEY", "re_test")
     monkeypatch.setenv("REPORT_TO", "me@example.com")
@@ -42,7 +42,7 @@ def fakes(monkeypatch):
 
 
 def report(client, **overrides):
-    body = {"file_id": "abc123", "reason": "This is malware", "turnstile_token": "ok"}
+    body = {"share_id": "abc123", "reason": "This is malware", "turnstile_token": "ok"}
     body.update(overrides)
     return client.post("/reports", json=body)
 
@@ -77,13 +77,26 @@ def test_no_reporter_email_means_no_reply_to(client, fakes):
 
 def test_missing_file_is_still_reported(client, fakes, monkeypatch):
     # usually it expired; the report still reaches me, marked as such
-    def gone(file_id):
-        raise HTTPException(status_code=404, detail="File not found")
+    def gone(share_id):
+        raise HTTPException(status_code=404, detail="Share not found")
 
-    monkeypatch.setattr(files, "lookup_file", gone)
+    monkeypatch.setattr(files, "list_share", gone)
 
     assert report(client).status_code == 204
     assert "not found" in fakes[0]["json"]["text"].lower()
+
+
+def test_every_file_in_the_share_is_described(client, fakes, monkeypatch):
+    monkeypatch.setattr(files, "list_share", lambda share_id: [
+        {"index": 0, "filename": "invoice.exe", "size": 2 * 1024**2},
+        {"index": 1, "filename": "readme.txt", "size": 10},
+    ])
+
+    report(client)
+
+    text = fakes[0]["json"]["text"]
+    assert "invoice.exe (2.0 MB)" in text
+    assert "readme.txt (10 B)" in text
 
 
 def test_bad_turnstile_token_is_403_and_sends_nothing(client, fakes):
@@ -101,8 +114,8 @@ def test_bad_reporter_email_is_rejected(client, fakes):
     assert report(client, email="not-an-email").status_code == 422
 
 
-def test_odd_file_id_is_rejected(client, fakes):
-    assert report(client, file_id="../etc\npasswd").status_code == 422
+def test_odd_share_id_is_rejected(client, fakes):
+    assert report(client, share_id="../etc\npasswd").status_code == 422
 
 
 def test_resend_error_is_502(client, monkeypatch):

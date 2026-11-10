@@ -20,12 +20,12 @@ export default function App() {
         </a>
       </header>
       <main className="stage">
-        {match ? <DownloadPage fileId={match[1]} /> : terms ? <TermsPage /> : <SendPage />}
+        {match ? <DownloadPage shareId={match[1]} /> : terms ? <TermsPage /> : <SendPage />}
         {!terms && (
           <ul className="facts" aria-label="How Beam works">
             <li>
               <HardDrive size={16} strokeWidth={2} aria-hidden="true" />
-              <span>Up to 10 GB per file</span>
+              <span>Up to 10 files, 10 GB in total</span>
             </li>
             <li>
               <Clock size={16} strokeWidth={2} aria-hidden="true" />

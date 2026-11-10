@@ -12,7 +12,7 @@ type State =
   | { phase: "sent" };
 
 /** "Report this file" under the Download button; opens a short form that emails the report to us. */
-export function ReportForm({ fileId }: { fileId: string }) {
+export function ReportForm({ shareId, plural = false }: { shareId: string; plural?: boolean }) {
   const [state, setState] = useState<State>({ phase: "closed" });
   const [reason, setReason] = useState("");
   const [email, setEmail] = useState("");
@@ -31,7 +31,7 @@ export function ReportForm({ fileId }: { fileId: string }) {
     return (
       <button type="button" className="report-toggle" onClick={() => setState({ phase: "open" })}>
         <Flag size={14} strokeWidth={2.25} aria-hidden="true" />
-        <span>Report this file</span>
+        <span>{plural ? "Report these files" : "Report this file"}</span>
       </button>
     );
   }
@@ -49,7 +49,7 @@ export function ReportForm({ fileId }: { fileId: string }) {
     e.preventDefault();
     if (!reason.trim()) return;
     setState({ phase: "sending" });
-    sendReport(fileId, reason.trim(), email.trim(), () =>
+    sendReport(shareId, reason.trim(), email.trim(), () =>
       challenge.current ? takeTurnstileToken(challenge.current) : Promise.reject(new Error("No challenge slot")),
     ).then(
       () => setState({ phase: "sent" }),

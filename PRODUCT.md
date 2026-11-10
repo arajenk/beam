@@ -19,14 +19,14 @@ Quick, frictionless file transfer. Upload a file, get a short link, share it; th
 Zero friction: no account, no email, none of the limits or upsells that come with cloud storage services. Files are ephemeral, so nothing lingers and privacy is the default.
 
 ## Operating Context
-- Single-file shares in v1. Multi-file shares (pick files or download a zip) are planned later.
-- Share link format: `/f/{id}` with a short hex ID.
+- Shares hold up to 10 files under one link; recipients download each file or all of them one by one.
+- Share link format: `/f/{id}` with a random 22-character ID.
 - Files expire about 1 day after upload (R2 lifecycle rule; actual deletion can take up to about 24h longer).
 - Uploads and downloads go directly between the browser and R2 through presigned URLs; the API only signs and checks.
 - Future idea (undecided): peer-to-peer WebRTC transfers for desktop app users.
 
 ## Capabilities and Constraints
-- Max file size: 10 GiB, uploaded as presigned multipart (64 MiB parts, four in parallel).
+- Up to 10 files, 10 GiB in total, uploaded as presigned multipart (one file at a time, 64 MiB parts, four in parallel).
 - Abuse limits: a Turnstile check to start an upload, 50 GiB per IP per day, 1 TiB total per day. Counters live in memory and reset when the API restarts.
 - No accounts and no authentication: anyone with the link can download.
 - Missing or expired files appear the same to the user (not found).

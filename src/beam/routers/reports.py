@@ -11,7 +11,7 @@ SITE_URL = "https://beamshare.app"
 
 class Report(BaseModel):
     # same shape as the ids the frontend routes on, so nothing odd ends up in the email subject
-    file_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    share_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
     reason: str = Field(max_length=2000)
     email: EmailStr | None = None
     turnstile_token: str = ""
@@ -33,13 +33,13 @@ def size_text(n):
     return f"{n:.1f} TB"
 
 
-def describe_file(file_id):
-    # name and size let me judge a report without opening the file
+def describe_share(share_id):
+    # names and sizes let me judge a report without opening the files
     try:
-        filename, size = files.lookup_file(file_id)
+        found = files.list_share(share_id)
     except HTTPException:
-        return "File: not found (probably expired)"
-    return f"File: {filename} ({size_text(size)})"
+        return "Files: not found (probably expired)"
+    return "Files:\n" + "\n".join(f"- {f['filename']} ({size_text(f['size'])})" for f in found)
 
 
 def send_email(subject, text, reply_to):
@@ -72,13 +72,13 @@ def report(body: Report, request: Request):
         raise HTTPException(status_code=403, detail="Verification failed")
 
     text = "\n".join([
-        f"Link: {SITE_URL}/f/{body.file_id}",
-        describe_file(body.file_id),
+        f"Link: {SITE_URL}/f/{body.share_id}",
+        describe_share(body.share_id),
         f"Reporter IP: {ip}",
         f"Reporter email: {body.email or 'not given'}",
         "",
         body.reason,
     ])
-    if not send_email(f"Beam report: {body.file_id}", text, body.email):
+    if not send_email(f"Beam report: {body.share_id}", text, body.email):
         raise HTTPException(status_code=502, detail="Couldn't send the report")
     return Response(status_code=204)
