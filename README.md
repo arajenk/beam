@@ -49,7 +49,7 @@ Files are stored in R2 under a random ID and deleted after about a day. Anyone w
 - **Storage:** Cloudflare R2
 - **Hosting:** Cloudflare Workers (frontend), Heroku (API)
 - **Bot protection:** Cloudflare Turnstile
-- **Tests:** pytest (92) and Vitest (29) covering uploads, limits, timeouts, cleanup, abuse reports, and stats
+- **Tests:** pytest (149) and Vitest (51) covering uploads, file requests, limits, timeouts, cleanup, abuse reports, stats, and screen scaling
 
 ## Running locally
 

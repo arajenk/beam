@@ -14,6 +14,7 @@ import logging
 import time
 import httpx
 import json
+import re
 import unicodedata
 
 load_dotenv()
@@ -35,6 +36,10 @@ MAX_SIZE = 10 * 1024**3
 NAME_LIMIT = 200
 PER_IP_LIMIT = 50 * 1024**3
 GLOBAL_LIMIT = 1024**4
+# everyone's sends into one file request together; a soft cap, since it lives in memory
+REQUEST_LIMIT = 25 * 1024**3
+# every id Beam hands out is secrets.token_urlsafe(16): 22 URL-safe characters
+ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{22}")
 # part URLs last 6h; the extra hour lets a slow last part still call complete
 SWEEP_AFTER = 7 * 60 * 60
 # so a hold lives at most SWEEP_AFTER + SWEEP_EVERY (about 8h)
@@ -57,7 +62,10 @@ s3 = boto3.client(
 lock = threading.Lock()
 ip_bytes: dict[str, int] = {}
 total_bytes = 0
-# R2 key -> {upload_id, ip, size, started_at}, one per file not yet completed or aborted
+# file request id -> bytes held by sends into it
+request_bytes: dict[str, int] = {}
+# R2 key -> {upload_id, ip, size, started_at, request}, one per file not yet completed
+# or aborted; request is the file request's id, or None for an ordinary share
 uploads: dict[str, dict] = {}
 
 
@@ -107,24 +115,43 @@ def verify_turnstile(token, ip):
         return False
 
 
-def reserve(ip, size):
+def valid_id(value):
+    return ID_PATTERN.fullmatch(value) is not None
+
+
+def reserve(ip, size, request_id=None):
     global total_bytes
     with lock:
         # check and add in one step, or two requests could both pass the check
         if ip_bytes.get(ip, 0) + size > PER_IP_LIMIT or total_bytes + size > GLOBAL_LIMIT:
             return False
+        if request_id is not None and request_bytes.get(request_id, 0) + size > REQUEST_LIMIT:
+            return False
         ip_bytes[ip] = ip_bytes.get(ip, 0) + size
         total_bytes += size
+        if request_id is not None:
+            request_bytes[request_id] = request_bytes.get(request_id, 0) + size
         return True
 
 
-def release(ip, amount):
+def _subtract(counts, name, amount):
+    counts[name] = counts.get(name, 0) - amount
+    if counts[name] <= 0:
+        del counts[name]
+
+
+def release(ip, amount, request_id=None):
     global total_bytes
     with lock:
-        ip_bytes[ip] = ip_bytes.get(ip, 0) - amount
-        if ip_bytes[ip] <= 0:
-            del ip_bytes[ip]
+        _subtract(ip_bytes, ip, amount)
         total_bytes -= amount
+        if request_id is not None:
+            _subtract(request_bytes, request_id, amount)
+
+
+def release_record(record, amount=None):
+    """Gives back a removed record's hold, or `amount` of it."""
+    release(record["ip"], record["size"] if amount is None else amount, record.get("request"))
 
 
 def take_record(key, upload_id):
@@ -156,6 +183,17 @@ def clean_name(name):
     if not name.strip("."):
         return "file"
     return name
+
+
+def clean_text(text, keep_newlines=False):
+    """Typed text shown to other people (names, notes): slashes and invisible or
+    control characters become "_", so nothing can disguise itself or split a key."""
+    return "".join(
+        ch if keep_newlines and ch == "\n"
+        else "_" if ch in "/\\" or unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp")
+        else ch
+        for ch in text
+    ).strip()
 
 
 class Part(BaseModel):
@@ -198,31 +236,37 @@ def sign_parts(key, upload_id, size):
         remaining -= this_size
     return part_urls
 
-@router.post('/uploads')
-def upload(start: Start, request: Request):
-    ip = client_ip(request)
-    if not start.turnstile_token or not verify_turnstile(start.turnstile_token, ip):
+def require_turnstile(token, ip):
+    if not token or not verify_turnstile(token, ip):
         raise HTTPException(status_code=403, detail="Verification failed")
 
-    total = sum(spec.size for spec in start.files)
+
+def check_share_size(specs):
+    total = sum(spec.size for spec in specs)
     if total > MAX_SIZE:
         raise HTTPException(status_code=413, detail="Share too large")
+    return total
 
-    if not reserve(ip, total):
+
+def open_share(specs, ip, key_for, request_id=None):
+    """Holds the bytes, then creates one multipart upload per file and signs every part.
+    key_for(share_id, index, name) gives each file's R2 key. Returns the start response."""
+    total = check_share_size(specs)
+    if not reserve(ip, total, request_id):
         raise HTTPException(status_code=429, detail="Daily upload limit reached")
 
     # everything is signed here, so nobody can add a file to this share later
     share_id = secrets.token_urlsafe(16)
     created = []  # (key, upload_id, spec, name)
     try:
-        for index, spec in enumerate(start.files):
+        for index, spec in enumerate(specs):
             name = clean_name(spec.filename)
-            key = f"{share_id}/{index}/{name}"
+            key = key_for(share_id, index, name)
             multipart = s3.create_multipart_upload(Bucket=r2_bucket, Key=key, ContentType=spec.content_type)
             created.append((key, multipart["UploadId"], spec, name))
     except Exception:
         # release first, so a failing undo below can't leak the hold
-        release(ip, total)
+        release(ip, total, request_id)
         # undo the files that did get created; R2's abort rule is the backstop if this fails too
         for key, upload_id, _, _ in created:
             try:
@@ -234,7 +278,7 @@ def upload(start: Start, request: Request):
     now = time.time()
     with lock:
         for key, upload_id, spec, _ in created:
-            uploads[key] = {"upload_id": upload_id, "ip": ip, "size": spec.size, "started_at": now}
+            uploads[key] = {"upload_id": upload_id, "ip": ip, "size": spec.size, "started_at": now, "request": request_id}
 
     return {
         "share_id": share_id,
@@ -250,24 +294,37 @@ def upload(start: Start, request: Request):
         ],
     }
 
-def find_upload(share_id, index):
-    """The key of the in-progress upload at share_id/index/, asked of R2 rather
+
+@router.post('/uploads')
+def upload(start: Start, request: Request):
+    ip = client_ip(request)
+    require_turnstile(start.turnstile_token, ip)
+    return open_share(start.files, ip, lambda share_id, index, name: f"{share_id}/{index}/{name}")
+
+
+def find_in_progress(prefix, matches=lambda key: True):
+    """The key of the in-progress upload under prefix that matches, asked of R2 rather
     than memory so it still works after a restart. None if there's no such upload.
 
     R2 lists upload ids re-encoded, so they can't be compared with the client's.
-    Each share_id/index/ only ever gets one upload (start assigns indexes once),
-    and R2 itself rejects a key paired with the wrong upload id (NoSuchUpload)."""
-    prefix = f"{share_id}/{index}/"
+    Start gives each index exactly one upload, and R2 itself rejects a key
+    paired with the wrong upload id (NoSuchUpload)."""
     listing = s3.list_multipart_uploads(Bucket=r2_bucket, Prefix=prefix)
     for u in listing.get("Uploads", []):
         # check the prefix too, rather than trusting R2's filter alone
-        if u["Key"].startswith(prefix):
+        if u["Key"].startswith(prefix) and matches(u["Key"]):
             return u["Key"]
     return None
 
-@router.post('/uploads/{share_id}/{index}/abort', status_code=204)
-def abort(share_id: str, index: int, upload_id: str):
-    key = find_upload(share_id, index)
+
+def find_upload(share_id, index):
+    """The in-progress upload at share_id/index/ of an ordinary share."""
+    if not valid_id(share_id):
+        return None
+    return find_in_progress(f"{share_id}/{index}/")
+
+
+def cancel_upload(key, upload_id):
     if key is None:
         # already completed or aborted: too late to cancel, so treat it as done
         return
@@ -280,11 +337,22 @@ def abort(share_id: str, index: int, upload_id: str):
 
     record = take_record(key, upload_id)
     if record:
-        release(record["ip"], record["size"])
+        release_record(record)
+
+
+@router.post('/uploads/{share_id}/{index}/abort', status_code=204)
+def abort(share_id: str, index: int, upload_id: str):
+    cancel_upload(find_upload(share_id, index), upload_id)
+
 
 @router.post('/uploads/{share_id}/{index}/complete')
 def complete(share_id: str, index: int, complete_req: Complete, background_tasks: BackgroundTasks):
-    key = find_upload(share_id, index)
+    finish_upload(find_upload(share_id, index), complete_req, background_tasks)
+    return {"share_id": share_id, "index": index}
+
+
+def finish_upload(key, complete_req, background_tasks):
+    """Checks R2's parts against the browser's list and joins them; settles the hold."""
     if key is None:
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -306,7 +374,7 @@ def complete(share_id: str, index: int, complete_req: Complete, background_tasks
             s3.abort_multipart_upload(Bucket=r2_bucket, Key=key, UploadId=complete_req.upload_id)
             record = take_record(key, complete_req.upload_id)
             if record:
-                release(record["ip"], record["size"])
+                release_record(record)
             raise HTTPException(status_code=413, detail="File too large")
 
     # the browser's list is a claim; R2's record is what actually got uploaded
@@ -329,10 +397,9 @@ def complete(share_id: str, index: int, complete_req: Complete, background_tasks
     # the file now costs its real size, not what was declared at start
     record = take_record(key, complete_req.upload_id)
     if record:
-        release(record["ip"], record["size"] - total_size)
+        release_record(record, record["size"] - total_size)
 
     background_tasks.add_task(bump, "uploads")
-    return {"share_id": share_id, "index": index}
 
 
 def sweep(now=None):
@@ -350,7 +417,7 @@ def sweep(now=None):
                 continue
         record = take_record(key, upload_id)
         if record:
-            release(record["ip"], record["size"])
+            release_record(record)
 
 
 async def sweep_loop(interval=SWEEP_EVERY):
@@ -369,6 +436,9 @@ async def sweep_loop(interval=SWEEP_EVERY):
 def list_share(share_id, index=None):
     """The finished files in a share (or just the one at index), from one R2 listing.
     Unfinished multipart uploads aren't objects yet, so they never show up here."""
+    # checked before asking R2, so an id like "requests" can't list another part of the bucket
+    if not valid_id(share_id):
+        raise HTTPException(status_code=404, detail="Share not found")
     prefix = f"{share_id}/" if index is None else f"{share_id}/{index}/"
     listing = s3.list_objects_v2(Bucket=r2_bucket, Prefix=prefix)
     found = []
@@ -387,18 +457,21 @@ def info(share_id: str):
         "files": [{"index": f["index"], "filename": f["filename"], "size": f["size"]} for f in list_share(share_id)],
     }
 
-@router.get('/f/{share_id}/{index}')
-def download(share_id: str, index: int, background_tasks: BackgroundTasks):
-    file = list_share(share_id, index)[0]
-
+def redirect_to_file(key, filename, background_tasks):
     url = s3.generate_presigned_url(
         "get_object",
         Params={
             "Bucket": r2_bucket,
-            "Key": file["key"],
-            "ResponseContentDisposition": f"attachment; filename*=UTF-8''{quote(file['filename'], safe='')}",
+            "Key": key,
+            "ResponseContentDisposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
         },
         ExpiresIn=600,
     )
     background_tasks.add_task(bump, "downloads")
     return RedirectResponse(url)
+
+
+@router.get('/f/{share_id}/{index}')
+def download(share_id: str, index: int, background_tasks: BackgroundTasks):
+    file = list_share(share_id, index)[0]
+    return redirect_to_file(file["key"], file["filename"], background_tasks)

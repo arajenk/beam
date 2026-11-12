@@ -4,12 +4,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   checkShare,
+  createRequest,
   fileDownloadUrl,
+  getRequestInfo,
   getShareInfo,
+  requestFileUrl,
+  requestPageUrl,
+  requestTarget,
   sendReport,
   startShare,
   UploadError,
   type FileState,
+  type UploadTarget,
 } from "./api";
 
 const API = "http://localhost:8000";
@@ -125,7 +131,7 @@ beforeEach(() => {
           init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))),
         );
       }
-      if (url === `${API}/uploads`) return startResponse(body);
+      if (url === `${API}/uploads` || url === `${API}/r/REQ/uploads`) return startResponse(body);
       if (url.endsWith("/complete")) return Response.json({});
       if (url.includes("/abort") || url.endsWith("/reports")) return new Response(null, { status: 204 });
       return new Response(null, { status: 404 });
@@ -142,7 +148,7 @@ const file = (name: string, size: number) => new File([new Uint8Array(size)], na
 const token = () => Promise.resolve("tok");
 
 /** Starts a share and resolves once every file has settled (done, failed or cancelled). */
-function run(files: File[]) {
+function run(files: File[], target?: UploadTarget) {
   let latest: FileState[] = [];
   let resolveSettled: (s: FileState[]) => void = () => {};
   const settled = new Promise<FileState[]>((r) => (resolveSettled = r));
@@ -155,6 +161,7 @@ function run(files: File[]) {
       }
     },
     token,
+    target,
   );
   return { handle, settled, latest: () => latest };
 }
@@ -485,6 +492,184 @@ describe("share page calls", () => {
   it("sendReport sends the share id", async () => {
     await sendReport("SHARE", "malware", "", token);
 
-    expect(calls[0].body).toEqual({ share_id: "SHARE", reason: "malware", email: null, turnstile_token: "tok" });
+    expect(calls[0].body).toEqual({
+      share_id: "SHARE",
+      reason: "malware",
+      email: null,
+      turnstile_token: "tok",
+      kind: "share",
+    });
+  });
+
+  it("sendReport can report a file request", async () => {
+    await sendReport("REQ", "phishing", "", token, "request");
+
+    expect(calls[0].body).toMatchObject({ share_id: "REQ", kind: "request" });
+  });
+});
+
+describe("sending into a file request", () => {
+  it("starts at the request's upload route with the sender's name", async () => {
+    const { handle, settled } = run([file("a.txt", 5)], requestTarget("REQ", "Alex"));
+
+    await handle.started;
+    await settled;
+
+    const start = calls.find((c) => c.url === `${API}/r/REQ/uploads`);
+    expect(start?.body).toEqual({
+      sender: "Alex",
+      files: [{ filename: "a.txt", size: 5, content_type: "text/plain" }],
+      turnstile_token: "tok",
+    });
+    expect(calls.some((c) => c.url === `${API}/uploads`)).toBe(false);
+  });
+
+  it("completes each file at the request's routes", async () => {
+    const { settled } = run([file("a.txt", 5), file("b.txt", 3)], requestTarget("REQ", "Alex"));
+
+    expect(statuses(await settled)).toEqual(["done", "done"]);
+    expect(posts()).toEqual(["/r/REQ/uploads", "/r/REQ/uploads/SHARE/0/complete", "/r/REQ/uploads/SHARE/1/complete"]);
+  });
+
+  it("cancels and beacons at the request's routes", async () => {
+    onPut = (xhr) => (xhr.url.includes("/1/") ? "hang" : "ok");
+    const { handle } = run([file("a.txt", 5), file("b.txt", 3)], requestTarget("REQ", "Alex"));
+    await vi.waitFor(() => expect(xhrs).toHaveLength(2));
+
+    listeners.pagehide.forEach((fn) => fn({}));
+    handle.cancel(1);
+
+    expect(beacons).toEqual([`${API}/r/REQ/uploads/SHARE/1/abort?upload_id=up-1`]);
+    expect(posts()).toContain("/r/REQ/uploads/SHARE/1/abort?upload_id=up-1");
+  });
+
+  it.each([
+    [410, "closed"],
+    [404, "missing"],
+  ])("a %i on start rejects the send as %s", async (status, kind) => {
+    startResponse = () => new Response(null, { status });
+    const { handle } = run([file("a.txt", 5)], requestTarget("REQ", "Alex"));
+
+    await expect(handle.started).rejects.toMatchObject({ kind });
+    expect(puts()).toEqual([]);
+  });
+
+  it("a 404 on complete stays failed without reading the listing", async () => {
+    // the API itself answers repeated completes, and a sender may not be allowed to list
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const u = String(url);
+      calls.push({ method: init?.method ?? "GET", url: u });
+      if (u === `${API}/r/REQ/uploads`) return signedFor(JSON.parse(init!.body as string));
+      if (u.endsWith("/complete")) return new Response(null, { status: 404 });
+      return new Response(null, { status: 204 });
+    });
+    const { settled } = run([file("a.txt", 5)], requestTarget("REQ", "Alex"));
+
+    expect(statuses(await settled)).toEqual(["failed"]);
+    expect(calls.some((c) => c.url.includes("/info"))).toBe(false);
+  });
+});
+
+describe("file request calls", () => {
+  it("createRequest sends the note, name and switch and returns both ids", async () => {
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      calls.push({ method: init?.method ?? "GET", url: String(url), body: JSON.parse(init!.body as string) });
+      return Response.json({ request_id: "REQ", owner_key: "KEY" });
+    });
+
+    const made = await createRequest({ note: "slides pls", name: "Ara", private: true }, token);
+
+    expect(made).toEqual({ requestId: "REQ", ownerKey: "KEY" });
+    expect(calls).toEqual([
+      {
+        method: "POST",
+        url: `${API}/requests`,
+        body: { note: "slides pls", name: "Ara", private: true, turnstile_token: "tok" },
+      },
+    ]);
+  });
+
+  it("createRequest sends a blank name as none", async () => {
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      calls.push({ method: "POST", url: String(url), body: JSON.parse(init!.body as string) });
+      return Response.json({ request_id: "REQ", owner_key: "KEY" });
+    });
+
+    await createRequest({ note: "hi", name: "   ", private: false }, token);
+
+    expect(calls[0].body).toMatchObject({ name: null });
+  });
+
+  it("createRequest retries a rejected Turnstile token once", async () => {
+    let tries = 0;
+    vi.mocked(fetch).mockImplementation(async () =>
+      ++tries === 1 ? new Response(null, { status: 403 }) : Response.json({ request_id: "REQ", owner_key: "KEY" }),
+    );
+
+    expect(await createRequest({ note: "hi", name: "", private: false }, token)).toEqual({
+      requestId: "REQ",
+      ownerKey: "KEY",
+    });
+    expect(tries).toBe(2);
+  });
+
+  it("getRequestInfo passes the owner key and maps the answer", async () => {
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      calls.push({ method: "GET", url: String(url) });
+      return Response.json({
+        request_id: "REQ",
+        note: "slides pls",
+        name: null,
+        private: true,
+        open: false,
+        closes_at: 1700000000,
+        is_owner: true,
+        sends: [{ share_id: "S1", sender: "Alex", files: [{ index: 0, filename: "a.txt", size: 5 }] }],
+      });
+    });
+
+    const info = await getRequestInfo("REQ", "K/Y");
+
+    expect(calls[0].url).toBe(`${API}/r/REQ/info?key=K%2FY`);
+    expect(info).toEqual({
+      requestId: "REQ",
+      note: "slides pls",
+      name: null,
+      private: true,
+      open: false,
+      closesAt: 1700000000,
+      isOwner: true,
+      sends: [{ shareId: "S1", sender: "Alex", files: [{ index: 0, filename: "a.txt", size: 5 }] }],
+    });
+  });
+
+  it("getRequestInfo keeps hidden files as null and leaves the key off when there isn't one", async () => {
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      calls.push({ method: "GET", url: String(url) });
+      return Response.json({
+        request_id: "REQ", note: "n", name: "Ara", private: true, open: true, closes_at: 1, is_owner: false, sends: null,
+      });
+    });
+
+    const info = await getRequestInfo("REQ");
+
+    expect(calls[0].url).toBe(`${API}/r/REQ/info`);
+    expect(info?.sends).toBeNull();
+  });
+
+  it("getRequestInfo of a missing request is null", async () => {
+    vi.mocked(fetch).mockImplementation(async () => new Response(null, { status: 404 }));
+
+    expect(await getRequestInfo("REQ")).toBeNull();
+  });
+
+  it("requestFileUrl points at the request's download redirect, with the key if given", () => {
+    expect(requestFileUrl("REQ", "S1", 2)).toBe(`${API}/r/REQ/S1/2`);
+    expect(requestFileUrl("REQ", "S1", 2, "KEY")).toBe(`${API}/r/REQ/S1/2?key=KEY`);
+  });
+
+  it("requestPageUrl is the public link, or the owner link with the key", () => {
+    expect(requestPageUrl("REQ")).toBe("https://beamshare.app/r/REQ");
+    expect(requestPageUrl("REQ", "KEY")).toBe("https://beamshare.app/r/REQ/KEY");
   });
 });

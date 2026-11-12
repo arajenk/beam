@@ -8,7 +8,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 export class UploadError extends Error {
-  readonly kind: "too-large" | "limit" | "verification" | "cancelled" | "failed";
+  // closed: the file request stopped taking sends; missing: no such request
+  readonly kind: "too-large" | "limit" | "verification" | "closed" | "missing" | "cancelled" | "failed";
   /** The API's HTTP status, when the API answered. */
   readonly status?: number;
   constructor(kind: UploadError["kind"], message: string, status?: number) {
@@ -83,6 +84,41 @@ type Job = {
 
 const enc = encodeURIComponent;
 
+/** Where a share's files go: an ordinary share, or one send into a file request. */
+export type UploadTarget = {
+  /** API path that starts the share. */
+  startPath: string;
+  /** Extra fields for the start call's body. */
+  extra: Record<string, unknown>;
+  /** API path of one file's upload, before /complete or /abort. */
+  filePath: (shareId: string, index: number) => string;
+  /**
+   * After a 404 on complete: is the file actually there (an earlier complete's
+   * reply was lost)? Absent when the API answers repeated completes itself.
+   */
+  isFinished?: (shareId: string, index: number) => Promise<boolean>;
+};
+
+export const shareTarget: UploadTarget = {
+  startPath: "/uploads",
+  extra: {},
+  filePath: (shareId, index) => `/uploads/${enc(shareId)}/${index}`,
+  isFinished: async (shareId, index) => {
+    const info = await getShareInfo(shareId).catch(() => null);
+    return !!info?.files.some((f) => f.index === index);
+  },
+};
+
+/** One send into a file request, under the sender's name. */
+export function requestTarget(requestId: string, sender: string): UploadTarget {
+  const base = `/r/${enc(requestId)}/uploads`;
+  return {
+    startPath: base,
+    extra: { sender },
+    filePath: (shareId, index) => `${base}/${enc(shareId)}/${index}`,
+  };
+}
+
 /**
  * Upload files as one share. `onChange` gets every file's state on each change.
  * Files go one after another (so finished files are safe sooner); each file's
@@ -93,6 +129,7 @@ export function startShare(
   files: File[],
   onChange: (states: FileState[]) => void,
   getToken: () => Promise<string>,
+  target: UploadTarget = shareTarget,
 ): ShareHandle {
   const states: FileState[] = files.map((f, index) => ({
     index,
@@ -109,7 +146,7 @@ export function startShare(
   let pumping = false;
 
   const abortUrl = (index: number) =>
-    `${API_URL}/uploads/${enc(shareId!)}/${index}/abort?upload_id=${enc(jobs[index].uploadId)}`;
+    `${API_URL}${target.filePath(shareId!, index)}/abort?upload_id=${enc(jobs[index].uploadId)}`;
   // Tell the API to discard a file's parts. Best-effort: the API's sweeper is the backstop.
   const abortOnServer = (index: number) => {
     if (shareId && jobs[index]) fetch(abortUrl(index), { method: "POST", keepalive: true }).catch(() => {});
@@ -162,7 +199,7 @@ export function startShare(
 
       try {
         await postJson(
-          `/uploads/${enc(shareId!)}/${index}/complete`,
+          `${target.filePath(shareId!, index)}/complete`,
           { upload_id: job.uploadId, parts: job.etags.map((etag, p) => ({ part_number: p + 1, etag })) },
           COMPLETE_MS,
         );
@@ -170,8 +207,7 @@ export function startShare(
         // A 404 can mean an earlier complete worked but its reply was lost:
         // the upload is gone because it became the file. The listing knows.
         if (!(err instanceof UploadError && err.status === 404)) throw err;
-        const info = await getShareInfo(shareId!).catch(() => null);
-        if (!info?.files.some((f) => f.index === index)) throw err;
+        if (!(await target.isFinished?.(shareId!, index))) throw err;
       }
       state.status = "done";
       state.loaded = state.size;
@@ -203,7 +239,8 @@ export function startShare(
       const token = await getToken().catch(() => {
         throw new UploadError("verification", "Couldn't verify this browser");
       });
-      return postJson<StartResponse>("/uploads", {
+      return postJson<StartResponse>(target.startPath, {
+        ...target.extra,
         files: files.map((f) => ({
           filename: f.name,
           size: f.size,
@@ -295,6 +332,8 @@ async function postJson<T>(path: string, body: unknown, ms = API_MS): Promise<T>
   if (res.status === 413) throw new UploadError("too-large", "Share is over 10 GB", 413);
   if (res.status === 403) throw new UploadError("verification", "Couldn't verify this browser", 403);
   if (res.status === 429) throw new UploadError("limit", "Daily upload limit reached", 429);
+  if (res.status === 410) throw new UploadError("closed", "This request is closed", 410);
+  if (res.status === 404) throw new UploadError("missing", "Not found", 404);
   if (!res.ok) throw new UploadError("failed", `Request failed (${res.status})`, res.status);
   return (await res.json()) as T;
 }
@@ -393,12 +432,13 @@ export class ReportError extends Error {
   }
 }
 
-/** Sends an abuse report about a share. Like uploads, a rejected token gets one retry with a fresh one. */
+/** Sends an abuse report about a share or a file request. Like uploads, a rejected token gets one retry with a fresh one. */
 export async function sendReport(
   shareId: string,
   reason: string,
   email: string,
   getToken: () => Promise<string>,
+  kind: "share" | "request" = "share",
 ): Promise<void> {
   const attempt = async () => {
     const token = await getToken().catch(() => {
@@ -407,7 +447,7 @@ export async function sendReport(
     const res = await fetch(`${API_URL}/reports`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ share_id: shareId, reason, email: email || null, turnstile_token: token }),
+      body: JSON.stringify({ share_id: shareId, reason, email: email || null, turnstile_token: token, kind }),
     });
     if (res.status === 403) throw new ReportError("verification", "Couldn't verify this browser");
     // 502: our email service failed, so the reporter should email us directly
@@ -418,4 +458,86 @@ export async function sendReport(
     if (err instanceof ReportError && err.kind === "verification") return attempt();
     throw err;
   });
+}
+
+// ── file requests ────────────────────────────────────────────────────────────
+
+export type RequestSend = { shareId: string; sender: string; files: SharedFile[] };
+export type RequestInfo = {
+  requestId: string;
+  note: string;
+  name: string | null;
+  private: boolean;
+  /** Still taking sends (requests close about a day after they're made). */
+  open: boolean;
+  /** Unix seconds when it stops taking sends. */
+  closesAt: number;
+  /** The page was opened with the owner key. */
+  isOwner: boolean;
+  /** null: private, and this isn't the owner link. [] means nothing sent yet. */
+  sends: RequestSend[] | null;
+};
+
+/** The link to hand out, or with `ownerKey`, the requester's own link. */
+export function requestPageUrl(requestId: string, ownerKey?: string): string {
+  return `${window.location.origin}/r/${requestId}${ownerKey ? `/${ownerKey}` : ""}`;
+}
+
+/** Makes a file request. The owner key exists only in this answer and in R2, so the page must keep it. */
+export async function createRequest(
+  request: { note: string; name: string; private: boolean },
+  getToken: () => Promise<string>,
+): Promise<{ requestId: string; ownerKey: string }> {
+  const attempt = async () => {
+    const token = await getToken().catch(() => {
+      throw new UploadError("verification", "Couldn't verify this browser");
+    });
+    return postJson<{ request_id: string; owner_key: string }>("/requests", {
+      note: request.note,
+      name: request.name.trim() || null,
+      private: request.private,
+      turnstile_token: token,
+    });
+  };
+  const res = await attempt().catch((err: unknown) => {
+    if (err instanceof UploadError && err.kind === "verification") return attempt();
+    throw err;
+  });
+  return { requestId: res.request_id, ownerKey: res.owner_key };
+}
+
+type RequestInfoResponse = {
+  request_id: string;
+  note: string;
+  name: string | null;
+  private: boolean;
+  open: boolean;
+  closes_at: number;
+  is_owner: boolean;
+  sends: { share_id: string; sender: string; files: SharedFile[] }[] | null;
+};
+
+/** The request and, if this link may see them, its files. null means missing or expired. */
+export async function getRequestInfo(requestId: string, ownerKey?: string): Promise<RequestInfo | null> {
+  const query = ownerKey ? `?key=${enc(ownerKey)}` : "";
+  const res = await fetchWithTimeout(`${API_URL}/r/${enc(requestId)}/info${query}`, {}, API_MS);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Request info failed (${res.status})`);
+  const body = (await res.json()) as RequestInfoResponse;
+  return {
+    requestId: body.request_id,
+    note: body.note,
+    name: body.name,
+    private: body.private,
+    open: body.open,
+    closesAt: body.closes_at,
+    isOwner: body.is_owner,
+    sends: body.sends && body.sends.map((s) => ({ shareId: s.share_id, sender: s.sender, files: s.files })),
+  };
+}
+
+/** Where a requested file's Download button sends the browser. */
+export function requestFileUrl(requestId: string, shareId: string, index: number, ownerKey?: string): string {
+  const query = ownerKey ? `?key=${enc(ownerKey)}` : "";
+  return `${API_URL}/r/${enc(requestId)}/${enc(shareId)}/${index}${query}`;
 }

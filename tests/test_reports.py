@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from beam.main import app
-from beam.routers import files, reports
+from beam.routers import file_requests, files, reports
 
 IP = "203.0.113.7"
 
@@ -116,6 +116,37 @@ def test_bad_reporter_email_is_rejected(client, fakes):
 
 def test_odd_share_id_is_rejected(client, fakes):
     assert report(client, share_id="../etc\npasswd").status_code == 422
+
+
+def test_a_request_is_reported_with_its_link_and_every_send(client, fakes, monkeypatch):
+    monkeypatch.setattr(file_requests, "list_request", lambda request_id: [
+        {"share_id": "s1", "sender": "Alex", "files": [{"index": 0, "filename": "invoice.exe", "size": 2 * 1024**2}]},
+        {"share_id": "s2", "sender": "Sam", "files": [{"index": 0, "filename": "readme.txt", "size": 10}]},
+    ])
+
+    assert report(client, share_id="req456", kind="request").status_code == 204
+
+    email = fakes[0]["json"]
+    assert "req456" in email["subject"]
+    text = email["text"]
+    assert "https://beamshare.app/r/req456" in text
+    assert "/f/req456" not in text
+    assert "Alex: invoice.exe (2.0 MB)" in text
+    assert "Sam: readme.txt (10 B)" in text
+
+
+def test_a_request_that_is_gone_is_still_reported(client, fakes, monkeypatch):
+    def gone(request_id):
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    monkeypatch.setattr(file_requests, "list_request", gone)
+
+    assert report(client, share_id="req456", kind="request").status_code == 204
+    assert "not found" in fakes[0]["json"]["text"].lower()
+
+
+def test_unknown_report_kind_is_rejected(client, fakes):
+    assert report(client, kind="folder").status_code == 422
 
 
 def test_resend_error_is_502(client, monkeypatch):

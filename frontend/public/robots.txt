@@ -1,4 +1,5 @@
 User-agent: *
 Disallow: /f/
+Disallow: /r/
 
 Sitemap: https://beamshare.app/sitemap.xml

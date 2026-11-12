@@ -20,11 +20,9 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import pytest
 from botocore.exceptions import EndpointConnectionError
-from botocore.stub import ANY, Stubber
+from botocore.stub import ANY
 from fastapi import Request
-from fastapi.testclient import TestClient
 
-from beam.main import app
 from beam.routers import files
 
 GiB = 1024**3
@@ -33,53 +31,8 @@ MAX_SIZE = 10 * GiB
 PART_SIZE = 64 * MiB
 URL_LIFETIME = 6 * 60 * 60
 
-SHARE = "abc123"
+SHARE = "abc123abc123abc123abc1"
 KEY = f"{SHARE}/0/a.bin"
-
-
-@pytest.fixture
-def client():
-    return TestClient(app)
-
-
-@pytest.fixture(autouse=True)
-def fresh_limits(monkeypatch):
-    """Every test starts with empty counters and records, and a fake Turnstile
-    that accepts the token "ok" (the real one would call Cloudflare)."""
-    files.ip_bytes.clear()
-    files.uploads.clear()
-    monkeypatch.setattr(files, "total_bytes", 0)
-    checked = []
-
-    def fake_verify(token, ip):
-        checked.append(token)
-        return token == "ok"
-
-    monkeypatch.setattr(files, "verify_turnstile", fake_verify)
-    yield checked
-    files.ip_bytes.clear()
-    files.uploads.clear()
-
-
-@pytest.fixture
-def r2():
-    with Stubber(files.s3) as stubber:
-        yield stubber
-        stubber.assert_no_pending_responses()
-
-
-@pytest.fixture
-def presigned(monkeypatch):
-    """Records every generate_presigned_url call, then signs for real."""
-    calls = []
-    real = files.s3.generate_presigned_url
-
-    def record(ClientMethod, Params=None, ExpiresIn=3600, HttpMethod=None):
-        calls.append({"method": ClientMethod, "params": Params, "expires": ExpiresIn})
-        return real(ClientMethod, Params=Params, ExpiresIn=ExpiresIn)
-
-    monkeypatch.setattr(files.s3, "generate_presigned_url", record)
-    return calls
 
 
 def f(name="a.bin", size=10, content_type="application/octet-stream"):
@@ -336,8 +289,8 @@ def test_complete_joins_the_parts(client, r2):
 
 def test_complete_finds_the_key_even_after_a_restart(client, r2):
     # no record in memory (the dyno restarted mid-upload); R2 still knows the key
-    expect_find(r2, [("abc123/3/thesis.pdf", "upload-9")], index=3)
-    expect_list_parts(r2, [(1, '"e1"', 5)], key="abc123/3/thesis.pdf", upload_id="upload-9")
+    expect_find(r2, [("abc123abc123abc123abc1/3/thesis.pdf", "upload-9")], index=3)
+    expect_list_parts(r2, [(1, '"e1"', 5)], key="abc123abc123abc123abc1/3/thesis.pdf", upload_id="upload-9")
     r2.add_response("complete_multipart_upload", {}, None)
 
     r = complete(client, index=3, upload_id="upload-9")
@@ -418,7 +371,7 @@ def test_abort_racing_another_abort_still_succeeds(client, r2):
 
 def test_info_lists_the_finished_files_in_order(client, r2):
     # file 1 never finished, so R2 doesn't list it; the share shows the other two
-    expect_listing(r2, [("abc123/2/b.txt", 5), ("abc123/0/a b.png", 1234)])
+    expect_listing(r2, [("abc123abc123abc123abc1/2/b.txt", 5), ("abc123abc123abc123abc1/0/a b.png", 1234)])
 
     r = client.get(f"/f/{SHARE}/info")
 
@@ -439,14 +392,14 @@ def test_info_of_unknown_share_is_404(client, r2):
 
 
 def test_download_redirects_to_that_one_file(client, r2, presigned):
-    expect_listing(r2, [("abc123/1/résumé.pdf", 10)], prefix=f"{SHARE}/1/")
+    expect_listing(r2, [("abc123abc123abc123abc1/1/résumé.pdf", 10)], prefix=f"{SHARE}/1/")
 
     r = client.get(f"/f/{SHARE}/1", follow_redirects=False)
 
     assert r.status_code == 307
     (call,) = presigned
     assert call["method"] == "get_object"
-    assert call["params"]["Key"] == "abc123/1/résumé.pdf"
+    assert call["params"]["Key"] == "abc123abc123abc123abc1/1/résumé.pdf"
     assert call["params"]["ResponseContentDisposition"] == f"attachment; filename*=UTF-8''{quote('résumé.pdf', safe='')}"
     assert call["expires"] == 600
 
@@ -459,6 +412,23 @@ def test_download_of_missing_file_is_404(client, r2):
 
 def test_old_single_file_download_is_gone(client):
     assert client.get(f"/f/{SHARE}", follow_redirects=False).status_code == 404
+
+
+# Share ids are always 22 URL-safe characters. Anything else is refused before R2
+# is asked, so a prefix like "requests" can't list other parts of the bucket.
+@pytest.mark.parametrize("bad", ["requests", "abc123", "x" * 23])
+def test_info_with_a_malformed_id_is_404_without_asking_r2(client, r2, bad):
+    assert client.get(f"/f/{bad}/info").status_code == 404
+
+
+def test_download_with_a_malformed_id_is_404_without_asking_r2(client, r2):
+    assert client.get("/f/requests/0", follow_redirects=False).status_code == 404
+
+
+def test_complete_with_a_malformed_id_is_404_without_asking_r2(client, r2):
+    r = client.post("/uploads/requests/0/complete", json={"upload_id": "u", "parts": []})
+
+    assert r.status_code == 404
 
 
 # ── the old relay endpoint ───────────────────────────────────────────────────
@@ -610,14 +580,14 @@ def test_complete_settles_the_hold_to_the_real_size(client, r2):
 
 def test_completing_one_file_leaves_the_others_held(client, r2):
     hold(size=200 * MiB)
-    hold(key="abc123/1/b.bin", upload_id="upload-b", size=1 * GiB)
+    hold(key="abc123abc123abc123abc1/1/b.bin", upload_id="upload-b", size=1 * GiB)
     expect_find(r2, [(KEY, "upload-123")])
     expect_list_parts(r2, [(1, '"e1"', 200 * MiB)])
     r2.add_response("complete_multipart_upload", {}, None)
 
     assert complete(client).status_code == 200
     assert files.total_bytes == 200 * MiB + 1 * GiB
-    assert set(files.uploads) == {"abc123/1/b.bin"}
+    assert set(files.uploads) == {"abc123abc123abc123abc1/1/b.bin"}
 
 
 def test_complete_413_releases_the_whole_hold(client, r2):

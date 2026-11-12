@@ -6,28 +6,13 @@ import { FileIcon } from "../components/FileIcon";
 import { FileRow } from "../components/FileRow";
 import { ReportForm } from "../components/ReportForm";
 import { Window } from "../components/Window";
+import { downloadInTurn } from "../download";
+import { navigate } from "../route";
 
 type State = { phase: "loading" } | { phase: "ready"; files: SharedFile[] } | { phase: "missing" } | { phase: "error" };
 
-// Gap between files in "Download all"; browsers drop downloads started too close together.
-const DOWNLOAD_GAP_MS = 800;
-
-/**
- * Downloads each file in turn through a hidden iframe. Each one hits the API's
- * redirect and R2 answers with Content-Disposition: attachment, so the page
- * stays put. The first time, the browser asks to allow multiple downloads.
- */
 function downloadAll(shareId: string, files: SharedFile[]) {
-  files.forEach((f, i) => {
-    window.setTimeout(() => {
-      const frame = document.createElement("iframe");
-      frame.hidden = true;
-      frame.src = fileDownloadUrl(shareId, f.index);
-      document.body.appendChild(frame);
-      // long enough for the download to start; the iframe itself shows nothing
-      window.setTimeout(() => frame.remove(), 60_000);
-    }, i * DOWNLOAD_GAP_MS);
-  });
+  downloadInTurn(files.map((f) => fileDownloadUrl(shareId, f.index)));
 }
 
 export function DownloadPage({ shareId }: { shareId: string }) {
@@ -63,7 +48,7 @@ export function DownloadPage({ shareId }: { shareId: string }) {
               ? "Beam links last about a day. Ask the sender for a fresh link."
               : "Check your connection and reload the page."}
           </p>
-          <a className="button button-quiet" href="/">
+          <a className="button button-quiet" href="/" onClick={navigate}>
             <span>Send files of your own</span>
             <ArrowRight size={16} strokeWidth={2.25} />
           </a>

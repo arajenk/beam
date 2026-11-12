@@ -12,7 +12,16 @@ type State =
   | { phase: "sent" };
 
 /** "Report this file" under the Download button; opens a short form that emails the report to us. */
-export function ReportForm({ shareId, plural = false }: { shareId: string; plural?: boolean }) {
+export function ReportForm({
+  shareId,
+  plural = false,
+  kind = "share",
+}: {
+  shareId: string;
+  plural?: boolean;
+  /** A file request is reported by its id, with its link and every send. */
+  kind?: "share" | "request";
+}) {
   const [state, setState] = useState<State>({ phase: "closed" });
   const [reason, setReason] = useState("");
   const [email, setEmail] = useState("");
@@ -31,7 +40,7 @@ export function ReportForm({ shareId, plural = false }: { shareId: string; plura
     return (
       <button type="button" className="report-toggle" onClick={() => setState({ phase: "open" })}>
         <Flag size={14} strokeWidth={2.25} aria-hidden="true" />
-        <span>{plural ? "Report these files" : "Report this file"}</span>
+        <span>{kind === "request" ? "Report this request" : plural ? "Report these files" : "Report this file"}</span>
       </button>
     );
   }
@@ -51,6 +60,7 @@ export function ReportForm({ shareId, plural = false }: { shareId: string; plura
     setState({ phase: "sending" });
     sendReport(shareId, reason.trim(), email.trim(), () =>
       challenge.current ? takeTurnstileToken(challenge.current) : Promise.reject(new Error("No challenge slot")),
+      kind,
     ).then(
       () => setState({ phase: "sent" }),
       (err: unknown) => {

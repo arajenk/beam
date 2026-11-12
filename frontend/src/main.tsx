@@ -4,6 +4,9 @@ import "@fontsource-variable/figtree";
 import "@fontsource-variable/jetbrains-mono";
 import "./styles.css";
 import App from "./App.tsx";
+import { followScreenSize } from "./scale";
+
+followScreenSize();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

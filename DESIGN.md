@@ -155,12 +155,13 @@ components:
 
 Beam is one near-white window resting on a dotted grey desk. Files are drawn as real document objects, with folded corners, type glyphs and a colored extension tag, and they physically move: they fan out under the cursor, lift when you drag, drop into the window, settle when the upload finishes. What comes out the other side is a link, and the moment it arrives is marked with a single warm highlight, sun yellow. Everything else stays cool, quiet and grey so that the file and the link carry the screen.
 
-The system is low density and centred on a single surface. One 600px window per screen holds the entire task. Above it sits the brand at top left, and below it a row of three plain facts aligned to the window's left edge. The window chrome borrows from desktop operating systems (a title bar with the state centred in it) but is modernised: no window-control dots, generous radius, soft layered shadow, no bevels. Colour is functional. Blue means "act", sun means "this just happened to your file", and the per-kind icon tints tell you what the file is.
+The system is low density and centred on a single surface. One 600px window holds one task. A file request page has two jobs (see what's been asked for and sent, and send your own), so it tiles two windows side by side instead of stacking them into one long scroll. Above the windows sit the brand at top left and the Send / Request switcher at top right, and below it a row of three plain facts aligned to the window's left edge. The window chrome borrows from desktop operating systems (a title bar with the state centred in it) but is modernised: no window-control dots, generous radius, soft layered shadow, no bevels. Colour is functional. Blue means "act", sun means "this just happened to your file", and the per-kind icon tints tell you what the file is.
 
 The user has explicitly rejected the "gradient AI look". The centred gradient drop-card is the refused alternative, and no surface in the build uses a tonal gradient fill.
 
 **Key Characteristics:**
-- One window per screen, a 600px column centred and anchored high on a dotted desk.
+- One window per task, a 600px column centred and anchored high on a dotted desk. Two-job pages tile two windows.
+- The whole page scales with the screen: drawn at 1x up to 1280px wide, growing to 1.3x at 1920px, capped at 1.4x.
 - Drawn file icons, tinted by kind, are the main imagery. They move with a soft overshooting ease.
 - Solid blue for actions. Sun yellow is the only warm accent and appears only as a transient state.
 - Figtree for everything people read. JetBrains Mono only for link and ID data.
@@ -223,9 +224,13 @@ The palette is cool grey with a single saturated blue, plus one warm yellow held
 
 ## Layout
 
-The page is a three-row grid: a top bar (brand only, max 1040px, 22px × 28px padding), the stage, and a one-line footer. The stage is a single centred column capped at 600px. Its top padding is `clamp(24px, 9vh, 112px)`, so the window sits high in the viewport, not vertically centred. Below the window sits the facts row: three icon-plus-text items (size limit, expiry, no account) with a 10px × 28px gap and 22px above. The row is left-aligned to the window's edge (4px inset). That is the one deliberate break from the centred composition: it reads as a caption to the window, not a second centred block.
+The page is a three-row grid: a top bar (brand left, Send / Request switcher right, max 1040px, 22px × 28px padding), the stage, and a one-line footer. The stage is a single centred column capped at 600px. Its top padding is `clamp(24px, 9vh, 112px)`, so the window sits high in the viewport, not vertically centred. Below the window sits the facts row: three icon-plus-text items (size limit, expiry, no account) with a 10px × 28px gap and 22px above. The row is left-aligned to the window's edge (4px inset). That is the one deliberate break from the centred composition: it reads as a caption to the window, not a second centred block.
 
 Inside the window, centred states (drop, receive) use a 44px top inset and 40px on the sides and bottom, with centred text. Transfer states (uploading, done) are left aligned with a 32px inset. Vertical rhythm between blocks is about 22–28px, and gaps within a group are 6–12px.
+
+**Screen scaling.** `src/scale.ts` sets `--zoom` from the window width (1x up to 1280px, 1.3x at 1920px, capped at 1.4x), and `.shell` applies it with CSS `zoom`, so text, spacing, icons and windows grow together while the desk's dots stay put. `.shell`'s min-height divides by the same factor so short pages never scroll.
+
+**Tiles.** Request pages with two jobs put two windows in a `.tiles` grid: two equal columns, 24px apart, as wide as the top bar (1040px) so they line up with the logo and the switcher, top-aligned. The facts row widens to match. Below 1000px the tiles stack in the same order at 600px. A page with one job (create, the public link of a private request, closed, gone) stays one window. Never tile just to fill space.
 
 Under 640px, gutters shrink to 16px, the stage top padding to 8px, and window insets to 36/20/28px. The facts row becomes a left-aligned column. The share field stacks with a full-width Copy button. The transfer footer stacks. The window-bar meta (the file ID) is hidden.
 
@@ -259,13 +264,36 @@ The app's one container. It is a near-white panel with a 44px title bar, laid ou
 - **Icon button:** 32px square, Ink 3, with a Line Soft fill on hover. Used for the cancel ×.
 
 ### File Icon (signature)
-A drawn 48×60 document. It has a white body with a #c9ced6 hairline, a corner fold tinted at 22% of the kind colour, a kind glyph (image landscape, play triangle, waveform, zipper, code brackets, grid, text lines), and a solid kind-coloured tag with the uppercase extension in white 800-weight type. The label takes the system font stack from `--font`, so it is always Figtree. The idle screen fans three icons (photo, pdf, zip) at -11°/0°/10°. Hovering lifts the centre one, and dragging spreads all three. Missing files show a ghosted, greyscale, tilted icon at 45% opacity.
+A drawn 48×60 document. It has a white body with a #c9ced6 hairline, a corner fold tinted at 22% of the kind colour, a kind glyph (image landscape, play triangle, waveform, zipper, code brackets, grid, text lines), and a solid kind-coloured tag with the uppercase extension in white 800-weight type. The label takes the system font stack from `--font`, so it is always Figtree. The idle screen fans three icons (photo, pdf, zip) at -11°/0°/10°, and the create-request page opens with the same fan above its centred heading, so both sides of Beam start the same way. Hovering lifts the centre one, and dragging spreads all three. Missing files show a ghosted, greyscale, tilted icon at 45% opacity.
 
 ### File Row
 A 44px icon, then the filename (Title type, middle-truncated, extension pinned), then a 10px pill progress bar in Action Blue on Line Soft (scaleX, 160ms linear), with "x of y" and a percentage in tabular Small type beneath. The icon drops in on mount (file-in: from 26px above, -7°, 112% scale, 560ms) and does a small settle bounce when the upload completes.
 
 ### Share Field
 A 12px-radius Title Bar trough with a Line inset ring. It holds the mono URL (selects all on focus) and a 128px-minimum primary Copy button. Focus-within swaps the ring to 2px Action Blue. When the link first arrives, the ring and wash are Sun and fade back to grey over 1.6s. When the link is copied, the field holds the Sun ring and wash for 2.2s, and the button turns Success green with a check and "Copied".
+
+### Send / Request switcher
+A desktop-style segmented control at the top right: a Line Soft trough with a 3px inset, two 32px segments in 650 Ink 3. The current side is the raised segment: Panel ground, Ink text, a faint shadow and hairline ring. It works at phone width beside the brand.
+
+### Fields
+10px-radius Title Bar ground with a Line inset ring, 15.5px Figtree, Ink 3 placeholder. Focus swaps the ring to 2px Action Blue. Invalid fields take a 2px Danger ring, with the message directly beneath in Danger Ink and a small alert icon. A 650 Ink 2 label sits above; "(optional)" is 400 Ink 3. The note box on /request shows a tabular "n / 500" counter under its right edge.
+
+### Switch
+A 46×28 pill. Off is the Scrollbar grey, on is Action Blue (flipping it is an action), with a Panel knob that slides 18px. It sits in a 12px-radius Title Bar row with its label and a one-line description that changes with the state.
+
+### Note
+The requester's words as typed: a 12px-radius Title Bar block with a Line Soft ring, 16px text, line breaks kept. A "Note" label sits above and "Written by the requester, not by Beam." in 13px Ink 3 below, because anyone can write anything there.
+
+### Secret Link
+The owner's private link, shown like an API key: the Share Field with the URL masked to `host/r/…/••••••`, an eye icon button to reveal it, a Copy button that copies the real link, and a hint underneath ("Keep this one to yourself…"). Request pages show both links without the scheme so they match.
+
+### Request States
+- **Open, group link:** tiles. Left: who's asking, the note and "Sent so far" (grouped by sender, Download per file, Download all). Right: the sender's name and the usual send box.
+- **Open, private link (sender):** one window: note, then name and send box.
+- **Owner:** tiles. Left: the links and the note. Right: "Sent so far", with a ghosted file icon when nothing has come in.
+- **Sent:** unboxed, like the share done state: "Upload complete" in ink, one Ink 2 line, and a quiet route "Send files of your own".
+- **Closed:** a neutral lock notice; files stay visible to whoever may see them.
+- **Gone:** the ghosted file icon, same as an expired share.
 
 ### Notices
 Inline 10px-radius strips in 14.5px text with a leading icon. Neutral notices use the Title Bar ground. Errors use Danger Wash with Danger Ink text.
@@ -276,7 +304,7 @@ Flat 8px-radius Line Soft blocks shaped like the incoming content (icon 88×110,
 ## Do's and Don'ts
 
 ### Do:
-- **Do** keep each screen to one 600px window on the dotted desk, with the task inside the window.
+- **Do** keep each task to one 600px window on the dotted desk. Tile a second window only when the page has a second job.
 - **Do** use Sun (#ffd23f) only for transient file events: drag-over, fresh link, copied.
 - **Do** set the share URL and file IDs in JetBrains Mono, and everything else in Figtree.
 - **Do** truncate filenames in the middle and keep the extension visible.

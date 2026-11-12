@@ -1,8 +1,9 @@
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, EmailStr, Field, field_validator
+from typing import Literal
 import httpx
 import os
-from beam.routers import files
+from beam.routers import file_requests, files
 
 router = APIRouter()
 
@@ -15,6 +16,8 @@ class Report(BaseModel):
     reason: str = Field(max_length=2000)
     email: EmailStr | None = None
     turnstile_token: str = ""
+    # a share at /f/{id}, or a file request at /r/{id}
+    kind: Literal["share", "request"] = "share"
 
     @field_validator("reason")
     @classmethod
@@ -40,6 +43,20 @@ def describe_share(share_id):
     except HTTPException:
         return "Files: not found (probably expired)"
     return "Files:\n" + "\n".join(f"- {f['filename']} ({size_text(f['size'])})" for f in found)
+
+
+def describe_request(request_id):
+    # sender names are claims, but they help tell one send from another
+    try:
+        sends = file_requests.list_request(request_id)
+    except HTTPException:
+        return "Files: not found (probably expired)"
+    lines = [
+        f"- {send['sender']}: {f['filename']} ({size_text(f['size'])})"
+        for send in sends
+        for f in send["files"]
+    ]
+    return "Files:\n" + "\n".join(lines) if lines else "Files: none sent yet"
 
 
 def send_email(subject, text, reply_to):
@@ -71,9 +88,13 @@ def report(body: Report, request: Request):
     if not files.verify_turnstile(body.turnstile_token, ip):
         raise HTTPException(status_code=403, detail="Verification failed")
 
+    if body.kind == "request":
+        link, files_text = f"{SITE_URL}/r/{body.share_id}", describe_request(body.share_id)
+    else:
+        link, files_text = f"{SITE_URL}/f/{body.share_id}", describe_share(body.share_id)
     text = "\n".join([
-        f"Link: {SITE_URL}/f/{body.share_id}",
-        describe_share(body.share_id),
+        f"Link: {link}",
+        files_text,
         f"Reporter IP: {ip}",
         f"Reporter email: {body.email or 'not given'}",
         "",

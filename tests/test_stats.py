@@ -75,14 +75,14 @@ def test_bump_survives_a_failed_write(r2):
 
 
 def find(r2):
-    r2.add_response("list_multipart_uploads", {"Uploads": [{"Key": "abc123/0/a.txt", "UploadId": "u"}]}, None)
+    r2.add_response("list_multipart_uploads", {"Uploads": [{"Key": "abc123abc123abc123abc1/0/a.txt", "UploadId": "u"}]}, None)
 
 
 def test_complete_counts_an_upload(client, r2, counted):
     find(r2)
     r2.add_response("list_parts", {"Parts": [{"PartNumber": 1, "ETag": '"e1"', "Size": 10}]}, None)
     r2.add_response("complete_multipart_upload", {}, None)
-    r = client.post("/uploads/abc123/0/complete", json={"upload_id": "u", "parts": [{"part_number": 1, "etag": '"e1"'}]})
+    r = client.post("/uploads/abc123abc123abc123abc1/0/complete", json={"upload_id": "u", "parts": [{"part_number": 1, "etag": '"e1"'}]})
     assert r.status_code == 200
     assert counted == ["uploads"]
 
@@ -90,26 +90,26 @@ def test_complete_counts_an_upload(client, r2, counted):
 def test_failed_complete_counts_nothing(client, r2, counted):
     find(r2)
     r2.add_response("list_parts", {"Parts": [{"PartNumber": 1, "ETag": '"e1"', "Size": 10}]}, None)
-    r = client.post("/uploads/abc123/0/complete", json={"upload_id": "u", "parts": [{"part_number": 1, "etag": '"wrong"'}]})
+    r = client.post("/uploads/abc123abc123abc123abc1/0/complete", json={"upload_id": "u", "parts": [{"part_number": 1, "etag": '"wrong"'}]})
     assert r.status_code == 400
     assert counted == []
 
 
 def test_download_counts_a_download(client, r2, counted):
-    r2.add_response("list_objects_v2", {"Contents": [{"Key": "abc123/0/a.txt", "Size": 3}]}, None)
-    r = client.get("/f/abc123/0", follow_redirects=False)
+    r2.add_response("list_objects_v2", {"Contents": [{"Key": "abc123abc123abc123abc1/0/a.txt", "Size": 3}]}, None)
+    r = client.get("/f/abc123abc123abc123abc1/0", follow_redirects=False)
     assert r.status_code == 307
     assert counted == ["downloads"]
 
 
 def test_missing_file_download_counts_nothing(client, r2, counted):
     r2.add_response("list_objects_v2", {}, None)
-    r = client.get("/f/abc123/0", follow_redirects=False)
+    r = client.get("/f/abc123abc123abc123abc1/0", follow_redirects=False)
     assert r.status_code == 404
     assert counted == []
 
 
 def test_info_lookup_is_not_a_download(client, r2, counted):
-    r2.add_response("list_objects_v2", {"Contents": [{"Key": "abc123/0/a.txt", "Size": 3}]}, None)
-    assert client.get("/f/abc123/info").status_code == 200
+    r2.add_response("list_objects_v2", {"Contents": [{"Key": "abc123abc123abc123abc1/0/a.txt", "Size": 3}]}, None)
+    assert client.get("/f/abc123abc123abc123abc1/info").status_code == 200
     assert counted == []

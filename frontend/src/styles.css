@@ -695,6 +695,7 @@ p {
   *::before,
   *::after {
     animation-duration: 1ms !important;
+    animation-delay: 0ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 1ms !important;
   }
@@ -975,4 +976,680 @@ p {
   .file-row-action span {
     display: none;
   }
+}
+
+/* ── send / request switcher (top bar) ────────────────────────────────── */
+
+/* A desktop-style segmented control: the current side is the raised segment. */
+.modes {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--line-soft);
+  box-shadow: inset 0 0 0 1px rgb(var(--shadow-rgb) / 0.05);
+}
+
+.mode {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 8px;
+  font-size: 14.5px;
+  font-weight: 650;
+  color: var(--ink-3);
+  text-decoration: none;
+  transition: color 140ms var(--ease-out), background-color 140ms var(--ease-out), box-shadow 140ms var(--ease-out);
+}
+
+.mode:hover {
+  color: var(--ink);
+}
+
+.mode[aria-current="page"] {
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgb(var(--shadow-rgb) / 0.1), 0 0 0 1px rgb(var(--shadow-rgb) / 0.06);
+}
+
+/* ── fields (request form, sender name) ───────────────────────────────── */
+
+.field-label {
+  display: block;
+  margin: 0 0 7px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ink-2);
+}
+
+.field-optional {
+  font-weight: 400;
+  color: var(--ink-3);
+}
+
+.field {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--bar);
+  box-shadow: inset 0 0 0 1px var(--line);
+  font: inherit;
+  font-size: 15.5px;
+  color: var(--ink);
+  transition: box-shadow 140ms var(--ease-out);
+}
+
+.field::placeholder {
+  color: var(--ink-3);
+}
+
+.field:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--blue);
+}
+
+.field-note {
+  resize: vertical;
+  min-height: 108px;
+  line-height: 1.5;
+}
+
+.field-count {
+  margin: 6px 2px 18px;
+  text-align: right;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+/* ── new request ──────────────────────────────────────────────────────── */
+
+.ask {
+  padding: 32px 32px 28px;
+}
+
+.ask-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 26px;
+}
+
+.ask-heading {
+  font-size: 24px;
+  line-height: 1.25;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+.ask-sub {
+  margin-top: 4px;
+  max-width: 46ch;
+  color: var(--ink-2);
+  font-size: 15.5px;
+  text-wrap: pretty;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 22px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--bar);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+}
+
+.toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.toggle-title {
+  font-size: 15.5px;
+  font-weight: 650;
+}
+
+.toggle-desc {
+  font-size: 14px;
+  color: var(--ink-3);
+  text-wrap: pretty;
+}
+
+/* Off is grey, on is Action Blue: flipping it is an action. */
+.switch {
+  flex: none;
+  position: relative;
+  width: 46px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--scrollbar);
+  cursor: pointer;
+  transition: background-color 180ms var(--ease-out);
+}
+
+.switch-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--panel);
+  box-shadow: 0 1px 2px rgb(var(--shadow-rgb) / 0.2), 0 2px 6px -2px rgb(var(--shadow-rgb) / 0.25);
+  transition: transform 220ms var(--ease-out);
+}
+
+.switch[aria-checked="true"] {
+  background: var(--blue);
+}
+
+.switch[aria-checked="true"] .switch-knob {
+  transform: translateX(18px);
+}
+
+.switch:focus-visible {
+  border-radius: 999px;
+}
+
+.ask-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 14px;
+  color: var(--ink-3);
+}
+
+.button:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+/* ── request page ─────────────────────────────────────────────────────── */
+
+.req {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 32px 32px 4px;
+}
+
+.req[aria-busy="true"] {
+  gap: 12px;
+  padding-bottom: 32px;
+}
+
+.skeleton-note {
+  height: 96px;
+}
+
+.req-links {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-bottom: 26px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.req-links .share {
+  margin-top: 0;
+}
+
+.share.is-fresh .share-field {
+  animation: link-arrive 1600ms var(--ease-out) 200ms both;
+}
+
+.share-hint {
+  margin-top: 7px;
+  font-size: 13.5px;
+  color: var(--ink-3);
+}
+
+.share-reveal {
+  flex: none;
+  align-self: center;
+  margin: 0 2px 0 0;
+}
+
+.req-bookmark {
+  margin-top: 0;
+}
+
+.req-heading {
+  font-size: 24px;
+  line-height: 1.25;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.req-note-label {
+  margin-top: 14px;
+  margin-bottom: 7px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ink-2);
+}
+
+/* the requester's own words, kept as typed */
+.req-note {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--bar);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+  font-size: 16px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.req-note-source {
+  margin-top: 7px;
+  font-size: 13px;
+  color: var(--ink-3);
+}
+
+.req .notice {
+  margin-top: 0;
+}
+
+.req-files-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.req-files-head .button-quiet {
+  margin-right: -12px;
+}
+
+.req-files-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 750;
+  letter-spacing: -0.01em;
+}
+
+.req-sends {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.req-sender {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+  font-size: 13.5px;
+  color: var(--ink-3);
+}
+
+.req-sender-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.req-empty {
+  padding: 18px 16px;
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+  font-size: 14.5px;
+  color: var(--ink-3);
+  text-align: center;
+}
+
+.req-files-foot {
+  animation: none;
+}
+
+/* only spins if the refresh is slow enough to notice, so fast replies don't flash */
+.is-spinning {
+  animation: spin 900ms linear 300ms infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.req-send {
+  margin-top: 28px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.req-from {
+  padding: 26px 32px 0;
+}
+
+.req-send .drop {
+  padding-top: 30px;
+}
+
+.req-sent {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 22px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--bar);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
+  color: var(--success);
+  animation: rise 460ms var(--ease-out) 90ms both;
+}
+
+.req-sent-title {
+  font-size: 16px;
+  font-weight: 750;
+  color: var(--ink);
+}
+
+.req-sent-sub {
+  margin-top: 2px;
+  font-size: 14.5px;
+  color: var(--ink-2);
+}
+
+.crosslink {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 18px;
+  font-size: 14.5px;
+  color: var(--ink-3);
+}
+
+.req-sent .crosslink {
+  margin-top: 10px;
+}
+
+.crosslink a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 650;
+  color: var(--blue);
+  text-decoration: none;
+  border-radius: 6px;
+}
+
+.crosslink a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.req-closed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin: 24px 32px 0;
+  padding-top: 18px;
+  border-top: 1px solid var(--line-soft);
+  font-size: 14.5px;
+  color: var(--ink-3);
+}
+
+.req-report {
+  padding: 4px 32px 28px;
+}
+
+@media (max-width: 640px) {
+  .topbar {
+    gap: 12px;
+  }
+  .mode {
+    padding: 0 12px;
+  }
+  .ask,
+  .req {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+  .ask {
+    padding-top: 24px;
+  }
+  .ask-heading,
+  .req-heading {
+    font-size: 21px;
+  }
+  .req {
+    padding-top: 24px;
+  }
+  .req-from {
+    padding: 22px 18px 0;
+  }
+  .req-closed {
+    margin-left: 18px;
+    margin-right: 18px;
+  }
+  .req-report {
+    padding: 4px 18px 22px;
+  }
+  .ask-foot {
+    flex-direction: column-reverse;
+    align-items: stretch;
+    text-align: center;
+  }
+  .share.is-secret .share-field {
+    display: grid;
+    grid-template-columns: 1fr auto;
+  }
+  .share.is-secret .share-copy {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 380px) {
+  .brand-name {
+    font-size: 19px;
+  }
+  .mode {
+    padding: 0 10px;
+    font-size: 14px;
+  }
+}
+
+/* the links are the point of these pages; they're there from the first frame */
+.req-links .share {
+  animation: none;
+}
+
+.req-send .drop {
+  padding-bottom: 28px;
+}
+
+.req-send + .req-report,
+.req-closed + .req-report {
+  padding-top: 0;
+}
+
+/* ── review fixes ─────────────────────────────────────────────────────── */
+
+.ask-head {
+  display: block;
+}
+
+.field.is-invalid {
+  box-shadow: inset 0 0 0 2px var(--danger);
+}
+
+.field-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  font-size: 14px;
+  color: var(--danger-ink);
+}
+
+.field-error svg {
+  flex: none;
+}
+
+/* done is unboxed, like the share link's done state */
+.req-sent {
+  display: block;
+  margin-top: 22px;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+}
+
+.req-sent-title {
+  font-size: 17px;
+}
+
+.req-sent-route {
+  margin: 10px 0 0 -12px;
+}
+
+.req-empty {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 0;
+  box-shadow: none;
+  text-align: left;
+}
+
+.req-empty .receive-ghost {
+  flex: none;
+}
+
+/* request lists scroll with the page, so icon shadows aren't clipped into a box */
+.req-sends .file-list {
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+  margin: 0;
+}
+
+/* the report link follows the send box directly; the box already ends in padding */
+.req-report {
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.req-report .report-toggle {
+  margin-top: 0;
+}
+
+/* a send is at most 10 files, so the request page lets its list grow with the page,
+   and the icons' shadows aren't cut off by a scroll box */
+.req-send .file-list {
+  max-height: none;
+  overflow: visible;
+  padding: 0;
+  margin: 0;
+}
+
+/* ── scale to the screen ──────────────────────────────────────────────── */
+
+/* --zoom is set from the window width (src/scale.ts): 1 on phones and laptops,
+   up to 1.4 on big monitors, so everything grows together. The desk's dots stay put. */
+.shell {
+  zoom: var(--zoom, 1);
+  min-height: calc(100dvh / var(--zoom, 1));
+}
+
+/* ── tiled request pages ──────────────────────────────────────────────── */
+
+/* Two jobs, two windows, side by side on the desk. */
+/* as wide as the top bar, so the tiles line up with the logo and the switcher */
+.stage > .tiles {
+  max-width: 1040px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.tiles > .window {
+  max-width: none;
+}
+
+.stage:has(> .tiles) > .facts {
+  max-width: 1040px;
+}
+
+.tiles .req:last-child {
+  padding-bottom: 32px;
+}
+
+.req-tile {
+  padding-bottom: 28px;
+}
+
+.req-files-count {
+  font-size: 14.5px;
+  color: var(--ink-3);
+}
+
+.req-send.is-tile {
+  margin-top: 0;
+  border-top: 0;
+}
+
+.req .req-files:last-child {
+  padding-bottom: 28px;
+}
+
+@media (max-width: 1000px) {
+  .stage > .tiles {
+    max-width: 600px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .stage:has(> .tiles) > .facts {
+    max-width: 600px;
+  }
+}
+
+.ask-head .ask-sub {
+  margin-top: 4px;
+}
+
+/* the create page opens like the send page: the file fan above a centred heading */
+.ask-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  margin-bottom: 30px;
+}
+
+.ask-head .ask-sub {
+  max-width: 40ch;
+  margin-top: 8px;
+}
+
+.ask:hover .drop-file-b {
+  transform: translateY(-9px);
 }
