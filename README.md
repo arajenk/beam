@@ -1,6 +1,6 @@
 # Beam
 
-Send up to 10 files, get one link. Up to 10 GB in total, no account, gone after about a day.
+Send up to 10 files and get one link, or ask for files and let people send them to you. Up to 10 GB per send, no account, gone after about a day.
 
 **Live:** https://beamshare.app
 
@@ -17,6 +17,10 @@ https://github.com/user-attachments/assets/10cc9810-813d-4094-a9c5-316e8418fe67
 ### Download
 
 `/f/{share}/info` lists the finished files in one R2 call, and `/f/{share}/{n}` signs a 10-minute URL for that file and redirects to it.
+
+### File requests
+
+A request is a note in R2 at `requests/{id}/note`, with an optional name and a private switch. Creating one returns two random IDs: the request ID people share, and an owner key the requester keeps. Senders open `/r/{id}`, add their name, and upload the same way as a share, into `requests/{id}/{share}/{sender}/{filename}/{index}`. One listing of `requests/{id}/` gives every send. A request takes files for a day.
 
 ### Expiry
 
@@ -36,11 +40,15 @@ An R2 lifecycle rule deletes files about a day after upload and clears abandoned
 - 50 GiB per IP per day and 1 TiB total per day, sized from the worst monthly bill I'd accept.
 - The declared size is held at start, settled to the real size on completion, and released on cancel. A sweeper aborts uploads that never finish.
 
+- Each request also has a 25 GB cap across everyone who sends to it, held and settled like the others.
+
 Counters are in memory and reset when the API restarts. That keeps it to one process with no extra infrastructure; a restart resets limits but never loses files.
+
+**Private requests without accounts.** With the private switch on, the API only lists or serves a request's files when the URL includes the owner key. The key lives in the request's note and is compared in constant time. Senders get the public link and the requester keeps the owner link, so two random IDs do the job a login would.
 
 ## Privacy
 
-Files are stored in R2 under a random ID and deleted after about a day. Anyone with the link can download until then. IP addresses are held in memory only, to enforce limits.
+Files are stored in R2 under a random ID and deleted after about a day. Anyone with the link can download until then. IP addresses are held in memory only, to enforce limits. Anyone with a request's link can read its note. If the request is private, only the owner link can see the files.
 
 ## Stack
 
