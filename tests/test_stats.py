@@ -29,6 +29,12 @@ def r2():
         stubber.assert_no_pending_responses()
 
 
+@pytest.fixture
+def counting(monkeypatch):
+    """Production sets COUNT_STATS=1; local dev and tests leave it unset."""
+    monkeypatch.setenv("COUNT_STATS", "1")
+
+
 def body(data):
     raw = json.dumps(data).encode()
     return StreamingBody(io.BytesIO(raw), len(raw))
@@ -50,28 +56,38 @@ def expect_put(r2, counts):
     )
 
 
-def test_bump_increments_the_stored_count(r2):
+def test_bump_increments_the_stored_count(r2, counting):
     expect_get(r2, {"uploads": 41, "downloads": 7})
     expect_put(r2, {"uploads": 42, "downloads": 7})
     real_bump("uploads")
 
 
-def test_first_bump_starts_from_zero(r2):
+def test_first_bump_starts_from_zero(r2, counting):
     r2.add_client_error("get_object", service_error_code="NoSuchKey", http_status_code=404)
     expect_put(r2, {"uploads": 0, "downloads": 1})
     real_bump("downloads")
 
 
-def test_bump_skips_when_r2_errors_instead_of_overwriting(r2):
+def test_bump_skips_when_r2_errors_instead_of_overwriting(r2, counting):
     # writing {"uploads": 1} here would wipe the real total
     r2.add_client_error("get_object", service_error_code="InternalError", http_status_code=500)
     real_bump("uploads")  # no put queued, and no exception
 
 
-def test_bump_survives_a_failed_write(r2):
+def test_bump_survives_a_failed_write(r2, counting):
     expect_get(r2, {"uploads": 1, "downloads": 0})
     r2.add_client_error("put_object", service_error_code="InternalError", http_status_code=500)
     real_bump("uploads")
+
+
+@pytest.mark.parametrize("value", [None, "", "0", "true"])
+def test_bump_does_nothing_unless_count_stats_is_1(r2, monkeypatch, value):
+    # local dev shares the real bucket, so its test uploads must not count
+    if value is None:
+        monkeypatch.delenv("COUNT_STATS", raising=False)
+    else:
+        monkeypatch.setenv("COUNT_STATS", value)
+    real_bump("uploads")  # no R2 call queued: any get/put would fail the stubber
 
 
 def find(r2):

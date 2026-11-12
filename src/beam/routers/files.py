@@ -76,7 +76,11 @@ stats_lock = threading.Lock()
 
 def bump(event):
     """Adds 1 to the all-time count for event ("uploads" or "downloads").
-    Runs after the response is sent, so a failure only loses this one count."""
+    Runs after the response is sent, so a failure only loses this one count.
+    Only production sets COUNT_STATS=1: local dev uses the same bucket, and its
+    test uploads would otherwise count as real ones."""
+    if os.environ.get("COUNT_STATS") != "1":
+        return
     with stats_lock:
         try:
             counts = json.loads(s3.get_object(Bucket=STATS_BUCKET, Key=STATS_KEY)["Body"].read())

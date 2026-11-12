@@ -1573,8 +1573,9 @@ p {
 
 /* ── scale to the screen ──────────────────────────────────────────────── */
 
-/* --zoom is set from the window width (src/scale.ts): 1 on phones and laptops,
-   up to 1.4 on big monitors, so everything grows together. The desk's dots stay put. */
+/* --zoom is set from the window size (src/scale.ts): 1 on phones and laptops,
+   up to 1.2 on big monitors, capped so the send page fits the window's height.
+   Everything grows together. The desk's dots stay put. */
 .shell {
   zoom: var(--zoom, 1);
   min-height: calc(100dvh / var(--zoom, 1));

@@ -161,7 +161,7 @@ The user has explicitly rejected the "gradient AI look". The centred gradient dr
 
 **Key Characteristics:**
 - One window per task, a 600px column centred and anchored high on a dotted desk. Two-job pages tile two windows.
-- The whole page scales with the screen: drawn at 1x up to 1280px wide, growing to 1.3x at 1920px, capped at 1.4x.
+- The whole page scales with the screen: drawn at 1x up to 1280px wide, growing to 1.05x at 1920px and 1.1x at 2560px, capped at 1.2x, and never so big that the empty send page runs past the window's bottom.
 - Drawn file icons, tinted by kind, are the main imagery. They move with a soft overshooting ease.
 - Solid blue for actions. Sun yellow is the only warm accent and appears only as a transient state.
 - Figtree for everything people read. JetBrains Mono only for link and ID data.
@@ -228,7 +228,7 @@ The page is a three-row grid: a top bar (brand left, Send / Request switcher rig
 
 Inside the window, centred states (drop, receive) use a 44px top inset and 40px on the sides and bottom, with centred text. Transfer states (uploading, done) are left aligned with a 32px inset. Vertical rhythm between blocks is about 22–28px, and gaps within a group are 6–12px.
 
-**Screen scaling.** `src/scale.ts` sets `--zoom` from the window width (1x up to 1280px, 1.3x at 1920px, capped at 1.4x), and `.shell` applies it with CSS `zoom`, so text, spacing, icons and windows grow together while the desk's dots stay put. `.shell`'s min-height divides by the same factor so short pages never scroll.
+**Screen scaling.** `src/scale.ts` sets `--zoom` from the window size (1x up to 1280px, +0.05 per 640px, capped at 1.2x, and capped again by height so the empty send page, 686px plus the stage's 9vh top padding at 1x, always fits; never below 1x), and `.shell` applies it with CSS `zoom`, so text, spacing, icons and windows grow together while the desk's dots stay put. `.shell`'s min-height divides by the same factor so short pages never scroll.
 
 **Tiles.** Request pages with two jobs put two windows in a `.tiles` grid: two equal columns, 24px apart, as wide as the top bar (1040px) so they line up with the logo and the switcher, top-aligned. The facts row widens to match. Below 1000px the tiles stack in the same order at 600px. A page with one job (create, the public link of a private request, closed, gone) stays one window. Never tile just to fill space.
 
